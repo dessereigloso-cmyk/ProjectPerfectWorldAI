@@ -21,18 +21,18 @@ Roblox = execution environment
 
 GOD AI owns the world.
 
-Your job is to reason about the world and decide what GOD AI
-should do next.
+Your job is to reason about the supplied world state and
+decide what GOD AI should do next.
 
 You do NOT directly execute Roblox code.
 
 You do NOT assume that an action succeeded.
 
-GOD AI will validate your commands.
-Roblox will execute them.
-Roblox will report the result.
+GOD AI validates your commands.
+Roblox executes them.
+Roblox reports the result.
 
-Your thinking process:
+THINKING PROCESS:
 
 OBSERVE
 UNDERSTAND
@@ -46,13 +46,7 @@ REMEMBER
 IMPROVE
 EXPAND
 
-==================================================
-WORLD THINKING
-==================================================
-
-Think about Project Perfect World as one connected living world.
-
-The world can contain:
+The world may contain:
 
 Players
 NPCs
@@ -75,33 +69,20 @@ Seasons
 Civilization
 Systems
 
-Do not think about objects in isolation.
+Think about the world as a connected system.
 
-For example:
+For example, if a village needs a farmer,
+consider whether the world also needs:
 
-If a village needs a farmer, think about:
+farmland
+crops
+growth
+harvesting
+food storage
+food consumption
+economy
 
-Farmer
-+
-Farmland
-+
-Crops
-+
-Growth
-+
-Harvest
-+
-Food storage
-+
-Food consumption
-+
-Economy
-
-Only create additional systems when they are actually needed.
-
-==================================================
-NPC / AI AGENTS
-==================================================
+Do not create unnecessary systems.
 
 NPCs and AI Agents may have:
 
@@ -120,52 +101,28 @@ location
 current task
 long-term objectives
 
-NPCs should behave as persistent individuals.
+Long-term objectives may include:
 
-Their actions should make sense based on:
+developing towns
+maintaining population
+maintaining food supply
+creating jobs
+developing economy
+creating settlements
+creating relationships
+creating quests
+creating events
+expanding the world
+improving NPC intelligence
+repairing broken systems
+improving player experience
+maintaining world stability
 
-personality
-job
-needs
-goals
-location
-time
-relationships
-world conditions
-
-==================================================
-LONG TERM WORLD OBJECTIVE
-==================================================
-
-Help GOD AI gradually create a living persistent world.
-
-Possible objectives include:
-
-Create civilizations
-Develop towns
-Maintain population
-Maintain food supply
-Create jobs
-Develop economy
-Create settlements
-Create relationships
-Create quests
-Create events
-Expand the world
-Improve NPC intelligence
-Repair broken systems
-Improve player experience
-Maintain world stability
-
-Do not attempt to build everything at once.
+Do not try to build everything at once.
 
 Prioritize what is necessary now.
 
-==================================================
-COMMANDS
-==================================================
-
-You may ONLY use these commands:
+ALLOWED COMMANDS:
 
 CREATE_NPC
 CREATE_LOCATION
@@ -180,36 +137,17 @@ MODIFY_SYSTEM
 REPAIR_SYSTEM
 WORLD_MAINTENANCE
 
-Never invent another command.
+Never invent commands outside this list.
 
-==================================================
-COMMAND FORMAT
-==================================================
-
-Every action must use:
+COMMAND FORMAT:
 
 {
-    "command": "COMMAND_NAME",
-    "target": "",
-    "parameters": {}
+  "command": "COMMAND_NAME",
+  "target": "",
+  "parameters": {}
 }
 
-Example:
-
-{
-    "command": "CREATE_NPC",
-    "target": "Village",
-    "parameters": {
-        "name": "Elara",
-        "job": "Farmer",
-        "personality": "Friendly",
-        "goal": "Maintain village food supply"
-    }
-}
-
-==================================================
-SAFETY
-==================================================
+SAFETY:
 
 Never request arbitrary Lua execution.
 
@@ -221,28 +159,23 @@ Never assume an NPC exists.
 
 Never assume a system exists.
 
-Use observations supplied by GOD AI.
+Use only the supplied world observations.
 
-If information is missing, prefer observation or maintenance
-instead of inventing facts.
+Do not repeatedly perform an action if the world state
+indicates that the action has already been completed.
 
-Do not repeatedly perform the same action if the previous
-result indicates it already exists.
-
-==================================================
-RESPONSE FORMAT
-==================================================
+RESPONSE FORMAT:
 
 Return ONLY valid JSON.
 
-Use exactly this structure:
+Use exactly:
 
 {
-    "reasoning": "short explanation",
-    "priority": "low",
-    "goal": "current world goal",
-    "actions": [],
-    "memory": []
+  "reasoning": "short explanation",
+  "priority": "low",
+  "goal": "current world goal",
+  "actions": [],
+  "memory": []
 }
 
 Priority must be:
@@ -252,16 +185,14 @@ medium
 high
 critical
 
-The actions array contains zero or more valid commands.
+The actions array contains zero or more allowed commands.
 
-The memory array contains important information that GOD AI
-should remember for future reasoning.
+The memory array contains important information that
+GOD AI should remember.
 
 Keep reasoning concise.
 
-==================================================
-FINAL RULE
-==================================================
+FINAL RULE:
 
 You are the reasoning brain.
 
@@ -278,38 +209,51 @@ Then plan again.
 `;
 
 function sendJSON(res, status, data) {
+
     res.writeHead(status, {
         "Content-Type": "application/json",
-        "Cache-Control": "no-store"
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, x-god-ai-token"
     });
 
     res.end(JSON.stringify(data));
 }
 
 function getPath(req) {
+
     try {
+
         const url = new URL(
             req.url,
             "http://" + (req.headers.host || "localhost")
         );
 
         return url.pathname;
+
     } catch (error) {
+
         return req.url.split("?")[0];
     }
 }
 
 function readBody(req) {
+
     return new Promise((resolve, reject) => {
 
         let body = "";
 
         req.on("data", chunk => {
+
             body += chunk;
 
-            // Prevent extremely large requests.
             if (body.length > 1000000) {
-                reject(new Error("Request body too large."));
+
+                reject(
+                    new Error("Request body too large.")
+                );
+
                 req.destroy();
             }
         });
@@ -317,14 +261,21 @@ function readBody(req) {
         req.on("end", () => {
 
             if (!body) {
+
                 resolve({});
+
                 return;
             }
 
             try {
+
                 resolve(JSON.parse(body));
+
             } catch (error) {
-                reject(new Error("Invalid JSON body."));
+
+                reject(
+                    new Error("Invalid JSON body.")
+                );
             }
         });
 
@@ -335,7 +286,10 @@ function readBody(req) {
 async function askExternalBrain(world) {
 
     if (!OPENROUTER_API_KEY) {
-        throw new Error("OPENROUTER_API_KEY is missing.");
+
+        throw new Error(
+            "OPENROUTER_API_KEY is missing."
+        );
     }
 
     const response = await fetch(
@@ -344,10 +298,15 @@ async function askExternalBrain(world) {
             method: "POST",
 
             headers: {
+
                 "Content-Type": "application/json",
-                "Authorization": "Bearer " + OPENROUTER_API_KEY,
+
+                "Authorization":
+                    "Bearer " + OPENROUTER_API_KEY,
+
                 "HTTP-Referer":
                     "https://project-perfect-world-ai.onrender.com",
+
                 "X-Title":
                     "Project Perfect World God AI"
             },
@@ -367,7 +326,11 @@ async function askExternalBrain(world) {
                         role: "user",
                         content:
                             "CURRENT WORLD STATE:\n" +
-                            JSON.stringify(world, null, 2)
+                            JSON.stringify(
+                                world,
+                                null,
+                                2
+                            )
                     }
 
                 ],
@@ -378,7 +341,8 @@ async function askExternalBrain(world) {
         }
     );
 
-    const responseText = await response.text();
+    const responseText =
+        await response.text();
 
     if (!response.ok) {
 
@@ -393,9 +357,14 @@ async function askExternalBrain(world) {
     let data;
 
     try {
+
         data = JSON.parse(responseText);
+
     } catch (error) {
-        throw new Error("OpenRouter returned invalid JSON.");
+
+        throw new Error(
+            "OpenRouter returned invalid JSON."
+        );
     }
 
     if (
@@ -403,7 +372,10 @@ async function askExternalBrain(world) {
         !data.choices[0] ||
         !data.choices[0].message
     ) {
-        throw new Error("OpenRouter returned no AI message.");
+
+        throw new Error(
+            "OpenRouter returned no AI message."
+        );
     }
 
     return data.choices[0].message.content;
@@ -412,12 +384,14 @@ async function askExternalBrain(world) {
 function parseDecision(answer) {
 
     if (typeof answer !== "string") {
-        throw new Error("AI response was not text.");
+
+        throw new Error(
+            "AI response was not text."
+        );
     }
 
     let cleaned = answer.trim();
 
-    // Remove markdown JSON fences if the model adds them.
     if (cleaned.startsWith("```")) {
 
         cleaned = cleaned
@@ -428,147 +402,250 @@ function parseDecision(answer) {
     }
 
     try {
+
         return JSON.parse(cleaned);
+
     } catch (error) {
 
         return {
+
             reasoning: cleaned,
+
             priority: "medium",
-            goal: "Analyze the current world.",
+
+            goal:
+                "Analyze the current world.",
+
             actions: [],
+
             memory: []
         };
     }
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer(
+    async (req, res) => {
 
-    const path = getPath(req);
+        const path = getPath(req);
 
-    // ==========================================
-    // ROOT
-    // ==========================================
+        // ==========================================
+        // CORS PREFLIGHT
+        // ==========================================
 
-    if (req.method === "GET" && path === "/") {
+        if (req.method === "OPTIONS") {
 
-        return sendJSON(res, 200, {
-            online: true,
-            system: "Project Perfect World",
-            godAI: "ONLINE",
-            externalBrain:
-                OPENROUTER_API_KEY
-                    ? "CONFIGURED"
-                    : "NOT_CONFIGURED",
-            message: "God AI server is running."
-        });
-    }
-
-    // ==========================================
-    // HEALTH
-    // ==========================================
-
-    if (req.method === "GET" && path === "/health") {
-
-        return sendJSON(res, 200, {
-            online: true,
-            system: "Project Perfect World",
-            godAI: "ONLINE",
-            externalBrain:
-                OPENROUTER_API_KEY
-                    ? "CONNECTED"
-                    : "NOT_CONNECTED",
-            serverVersion: "2.0"
-        });
-    }
-
-    // ==========================================
-    // GOD AI
-    // ==========================================
-
-    if (req.method === "POST" && path === "/godai") {
-
-        const providedToken = req.headers["x-god-ai-token"];
-
-        if (!GOD_AI_TOKEN) {
-
-            return sendJSON(res, 500, {
-                success: false,
-                error: "GOD_AI_TOKEN is not configured."
+            return sendJSON(res, 200, {
+                success: true,
+                cors: "enabled"
             });
         }
+
+        // ==========================================
+        // ROOT
+        // ==========================================
 
         if (
-            !providedToken ||
-            providedToken !== GOD_AI_TOKEN
+            req.method === "GET" &&
+            path === "/"
         ) {
-
-            return sendJSON(res, 401, {
-                success: false,
-                error: "Unauthorized."
-            });
-        }
-
-        try {
-
-            const world = await readBody(req);
-
-            const aiAnswer =
-                await askExternalBrain(world);
-
-            const decision =
-                parseDecision(aiAnswer);
 
             return sendJSON(res, 200, {
 
-                success: true,
+                online: true,
 
-                system: "Project Perfect World",
+                system:
+                    "Project Perfect World",
 
-                godAI: "ONLINE",
+                godAI:
+                    "ONLINE",
 
-                brain: MODEL,
+                externalBrain:
+                    OPENROUTER_API_KEY
+                        ? "CONFIGURED"
+                        : "NOT_CONFIGURED",
 
-                decision: decision
+                message:
+                    "God AI server is running.",
 
-            });
-
-        } catch (error) {
-
-            console.error("GOD AI ERROR:", error);
-
-            return sendJSON(res, 500, {
-
-                success: false,
-
-                error: error.message
-
+                version:
+                    "3.0"
             });
         }
+
+        // ==========================================
+        // HEALTH
+        // ==========================================
+
+        if (
+            req.method === "GET" &&
+            path === "/health"
+        ) {
+
+            return sendJSON(res, 200, {
+
+                online: true,
+
+                system:
+                    "Project Perfect World",
+
+                godAI:
+                    "ONLINE",
+
+                externalBrain:
+                    OPENROUTER_API_KEY
+                        ? "CONNECTED"
+                        : "NOT_CONNECTED",
+
+                serverVersion:
+                    "3.0",
+
+                cors:
+                    "ENABLED"
+            });
+        }
+
+        // ==========================================
+        // GOD AI
+        // ==========================================
+
+        if (
+            req.method === "POST" &&
+            path === "/godai"
+        ) {
+
+            const providedToken =
+                req.headers["x-god-ai-token"];
+
+            if (!GOD_AI_TOKEN) {
+
+                return sendJSON(res, 500, {
+
+                    success: false,
+
+                    error:
+                        "GOD_AI_TOKEN is not configured."
+                });
+            }
+
+            if (
+                !providedToken ||
+                providedToken !== GOD_AI_TOKEN
+            ) {
+
+                return sendJSON(res, 401, {
+
+                    success: false,
+
+                    error:
+                        "Unauthorized."
+                });
+            }
+
+            try {
+
+                const world =
+                    await readBody(req);
+
+                const aiAnswer =
+                    await askExternalBrain(
+                        world
+                    );
+
+                const decision =
+                    parseDecision(
+                        aiAnswer
+                    );
+
+                return sendJSON(res, 200, {
+
+                    success: true,
+
+                    system:
+                        "Project Perfect World",
+
+                    godAI:
+                        "ONLINE",
+
+                    brain:
+                        MODEL,
+
+                    decision:
+                        decision
+                });
+
+            } catch (error) {
+
+                console.error(
+                    "GOD AI ERROR:",
+                    error
+                );
+
+                return sendJSON(res, 500, {
+
+                    success: false,
+
+                    error:
+                        error.message
+                });
+            }
+        }
+
+        // ==========================================
+        // 404
+        // ==========================================
+
+        return sendJSON(res, 404, {
+
+            error:
+                "Endpoint not found",
+
+            path:
+                path
+        });
     }
-
-    // ==========================================
-    // 404
-    // ==========================================
-
-    return sendJSON(res, 404, {
-
-        error: "Endpoint not found",
-
-        path: path
-
-    });
-});
+);
 
 server.listen(PORT, () => {
 
-    console.log("================================");
-    console.log("PROJECT PERFECT WORLD");
-    console.log("EXTERNAL GOD AI");
-    console.log("================================");
-    console.log("SERVER: ONLINE");
-    console.log("BRAIN:", MODEL);
-    console.log("PORT:", PORT);
-    console.log("VERSION: 2.0");
-    console.log("================================");
+    console.log(
+        "================================"
+    );
 
+    console.log(
+        "PROJECT PERFECT WORLD"
+    );
+
+    console.log(
+        "EXTERNAL GOD AI"
+    );
+
+    console.log(
+        "================================"
+    );
+
+    console.log(
+        "SERVER: ONLINE"
+    );
+
+    console.log(
+        "BRAIN:",
+        MODEL
+    );
+
+    console.log(
+        "PORT:",
+        PORT
+    );
+
+    console.log(
+        "VERSION: 3.0"
+    );
+
+    console.log(
+        "CORS: ENABLED"
+    );
+
+    console.log(
+        "================================"
+    );
 });
