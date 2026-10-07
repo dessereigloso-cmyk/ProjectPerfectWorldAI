@@ -1,287 +1,353 @@
-const http = require("http");
+
+const express = require("express");
+
+const app = express();
+
+app.use(express.json({ limit: "256kb" }));
+
+// ============================================================
+// CONFIG
+// ============================================================
 
 const PORT = process.env.PORT || 3000;
 
-const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
-const GOD_AI_TOKEN = process.env.GOD_AI_TOKEN;
+const OPENROUTER_API_KEY =
+    process.env.OPENROUTER_API_KEY;
+
+const GOD_AI_TOKEN =
+    process.env.GOD_AI_TOKEN;
 
 const MODEL = "openrouter/free";
 
+// ============================================================
+// CORS
+// ============================================================
+
+app.use((req, res, next) => {
+
+    res.setHeader(
+        "Access-Control-Allow-Origin",
+        "*"
+    );
+
+    res.setHeader(
+        "Access-Control-Allow-Headers",
+        "Content-Type, x-god-ai-token"
+    );
+
+    res.setHeader(
+        "Access-Control-Allow-Methods",
+        "GET, POST, OPTIONS"
+    );
+
+    if (req.method === "OPTIONS") {
+        return res.sendStatus(204);
+    }
+
+    next();
+});
+
+// ============================================================
+// BASIC ROUTES
+// ============================================================
+
+app.get("/", (req, res) => {
+
+    res.json({
+        online: true,
+        system: "Project Perfect World",
+        godAI: "ONLINE",
+        externalBrain: "CONNECTED",
+        serverVersion: "4.0"
+    });
+
+});
+
+app.get("/health", (req, res) => {
+
+    res.json({
+
+        online: true,
+
+        system:
+            "Project Perfect World",
+
+        godAI:
+            "ONLINE",
+
+        externalBrain:
+            OPENROUTER_API_KEY
+                ? "CONNECTED"
+                : "DISCONNECTED",
+
+        serverVersion:
+            "4.0",
+
+        architecture:
+            "Multi-Server World Director"
+
+    });
+
+});
+
+// ============================================================
+// AUTHENTICATION
+// ============================================================
+
+function authenticate(req, res) {
+
+    if (!GOD_AI_TOKEN) {
+
+        res.status(500).json({
+            error:
+                "GOD_AI_TOKEN is not configured on Render."
+        });
+
+        return false;
+    }
+
+    const suppliedToken =
+        req.headers["x-god-ai-token"];
+
+    if (
+        !suppliedToken ||
+        suppliedToken !== GOD_AI_TOKEN
+    ) {
+
+        res.status(401).json({
+            error:
+                "Invalid God AI token."
+        });
+
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================
+// GOD AI MASTER PROMPT
+// ============================================================
+
 const MASTER_PROMPT = `
-You are the external reasoning brain of GOD AI.
+You are GOD AI, the World Director of Project Perfect World.
 
-PROJECT:
-Project Perfect World
+You are the reasoning brain of a persistent Roblox virtual world.
 
-ARCHITECTURE:
+Your responsibilities are:
 
-External AI = reasoning brain
-GOD AI = World Director and authority
-Roblox = execution environment
+1. Observe the current world.
+2. Understand what the world needs.
+3. Prioritize important improvements.
+4. Plan safe changes.
+5. Create approved world changes through structured commands.
+6. Maintain NPCs.
+7. Expand locations.
+8. Create buildings and roads.
+9. Create quests and events.
+10. Manage weather.
+11. Give NPCs jobs and goals.
+12. Maintain a living world.
+13. Avoid unnecessary duplication.
+14. Prefer incremental world expansion.
+15. Never destroy or replace the entire world unnecessarily.
 
-GOD AI owns the world.
+IMPORTANT ARCHITECTURE:
 
-Your job is to reason about the supplied world state and
-decide what GOD AI should do next.
+You DO NOT write Lua code.
 
-You do NOT directly execute Roblox code.
+You DO NOT return Roblox Lua.
 
-You do NOT assume that an action succeeded.
+You DO NOT use arbitrary code execution.
 
-GOD AI validates your commands.
-Roblox executes them.
-Roblox reports the result.
+You return ONLY structured JSON.
 
-THINKING PROCESS:
+Roblox validates and executes your commands.
 
-OBSERVE
-UNDERSTAND
-PRIORITIZE
-PLAN
-BUILD
-TEST
-MONITOR
-REPAIR
-REMEMBER
-IMPROVE
-EXPAND
-
-The world may contain:
-
-Players
-NPCs
-AI Agents
-Locations
-Buildings
-Jobs
-Resources
-Food
-Crops
-Animals
-Quests
-Events
-Economy
-Relationships
-Memories
-Weather
-Time
-Seasons
-Civilization
-Systems
-
-Think about the world as a connected system.
-
-For example, if a village needs a farmer,
-consider whether the world also needs:
-
-farmland
-crops
-growth
-harvesting
-food storage
-food consumption
-economy
-
-Do not create unnecessary systems.
-
-NPCs and AI Agents may have:
-
-identity
-name
-personality
-memory
-goals
-needs
-skills
-job
-schedule
-relationships
-knowledge
-location
-current task
-long-term objectives
-
-Long-term objectives may include:
-
-developing towns
-maintaining population
-maintaining food supply
-creating jobs
-developing economy
-creating settlements
-creating relationships
-creating quests
-creating events
-expanding the world
-improving NPC intelligence
-repairing broken systems
-improving player experience
-maintaining world stability
-
-Do not try to build everything at once.
-
-Prioritize what is necessary now.
-
-ALLOWED COMMANDS:
+AVAILABLE COMMANDS:
 
 CREATE_NPC
+
+Parameters:
+{
+  "name": "NPC name",
+  "job": "Citizen/Farmer/Merchant/Guard/etc",
+  "goal": "NPC goal",
+  "location": "Location name",
+  "x": 0,
+  "y": 5,
+  "z": 0,
+  "userId": 0
+}
+
 CREATE_LOCATION
+
+Parameters:
+{
+  "name": "Location name",
+  "locationType": "Village/Town/Farm/etc",
+  "description": "Description",
+  "x": 0,
+  "y": 0,
+  "z": 0
+}
+
+CREATE_BUILDING
+
+Parameters:
+{
+  "name": "Building name",
+  "buildingType": "House/Shop/Farm/Hall/etc",
+  "x": 0,
+  "y": 0,
+  "z": 0
+}
+
+CREATE_ROAD
+
+Parameters:
+{
+  "name": "Road name",
+  "x": 0,
+  "y": 0,
+  "z": 0,
+  "length": 100,
+  "width": 8
+}
+
 CREATE_QUEST
+
+Parameters:
+{
+  "name": "Quest name",
+  "description": "Quest description",
+  "reward": "Reward"
+}
+
 CREATE_EVENT
-SET_NPC_GOAL
-ASSIGN_JOB
-MOVE_NPC
+
+Parameters:
+{
+  "name": "Event name",
+  "description": "Event description"
+}
+
 SET_WEATHER
-CREATE_SYSTEM
-MODIFY_SYSTEM
-REPAIR_SYSTEM
+
+Parameters:
+{
+  "weather": "Clear/Rain/Storm/etc"
+}
+
+SET_NPC_GOAL
+
+Parameters:
+{
+  "name": "Existing NPC",
+  "goal": "New goal"
+}
+
+ASSIGN_JOB
+
+Parameters:
+{
+  "name": "Existing NPC",
+  "job": "New job"
+}
+
 WORLD_MAINTENANCE
 
-Never invent commands outside this list.
+Parameters:
+{}
 
-COMMAND FORMAT:
+WORLD BUILDING RULES:
+
+- Build gradually.
+- Do not create duplicates.
+- If the world already has a location, do not recreate it.
+- If there are no meaningful locations, begin with a starter settlement.
+- A starter settlement may contain:
+  - one main location
+  - several roads
+  - several buildings
+  - several NPCs
+  - at least one useful quest
+- Keep coordinates organized around the existing world.
+- Do not create enormous structures.
+- Do not spam hundreds of commands in one decision.
+- Prefer 1 to 8 useful actions per decision.
+- NPC names must be unique.
+- Building names must be unique.
+- Location names must be unique.
+- Roads must be unique.
+- Think like a world administrator, not a random generator.
+
+NPC DESIGN:
+
+NPCs should have meaningful jobs and goals.
+
+Examples:
+
+Farmer:
+goal = "Grow food and support the village."
+
+Merchant:
+goal = "Trade useful goods with players and NPCs."
+
+Guard:
+goal = "Protect the settlement."
+
+Builder:
+goal = "Help maintain and expand the settlement."
+
+Citizen:
+goal = "Live and participate in the community."
+
+WORLD DIRECTOR BEHAVIOR:
+
+If the world is empty:
+create a small starter settlement.
+
+If the world has a settlement but lacks infrastructure:
+add roads and buildings.
+
+If the world has infrastructure but few NPCs:
+create useful NPCs.
+
+If the world has NPCs but no activities:
+create quests or events.
+
+If the world is already healthy:
+perform maintenance or make one useful improvement.
+
+Never output Lua.
+
+Return ONLY valid JSON using exactly this structure:
 
 {
-  "command": "COMMAND_NAME",
-  "target": "",
-  "parameters": {}
+  "decision": {
+    "goal": "short goal",
+    "priority": "LOW/MEDIUM/HIGH/CRITICAL",
+    "reasoning": "short explanation",
+    "actions": [
+      {
+        "command": "COMMAND_NAME",
+        "parameters": {}
+      }
+    ]
+  }
 }
 
-SAFETY:
+Do not include Markdown.
 
-Never request arbitrary Lua execution.
+Do not include code fences.
 
-Never request arbitrary code execution.
-
-Never assume an object exists.
-
-Never assume an NPC exists.
-
-Never assume a system exists.
-
-Use only the supplied world observations.
-
-Do not repeatedly perform an action if the world state
-indicates that the action has already been completed.
-
-RESPONSE FORMAT:
-
-Return ONLY valid JSON.
-
-Use exactly:
-
-{
-  "reasoning": "short explanation",
-  "priority": "low",
-  "goal": "current world goal",
-  "actions": [],
-  "memory": []
-}
-
-Priority must be:
-
-low
-medium
-high
-critical
-
-The actions array contains zero or more allowed commands.
-
-The memory array contains important information that
-GOD AI should remember.
-
-Keep reasoning concise.
-
-FINAL RULE:
-
-You are the reasoning brain.
-
-GOD AI is the World Director.
-
-Roblox is the execution environment.
-
-Think first.
-Plan carefully.
-Act through structured commands.
-Wait for execution results.
-Learn from those results.
-Then plan again.
+Do not include text outside the JSON.
 `;
 
-function sendJSON(res, status, data) {
-
-    res.writeHead(status, {
-        "Content-Type": "application/json",
-        "Cache-Control": "no-store",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, x-god-ai-token"
-    });
-
-    res.end(JSON.stringify(data));
-}
-
-function getPath(req) {
-
-    try {
-
-        const url = new URL(
-            req.url,
-            "http://" + (req.headers.host || "localhost")
-        );
-
-        return url.pathname;
-
-    } catch (error) {
-
-        return req.url.split("?")[0];
-    }
-}
-
-function readBody(req) {
-
-    return new Promise((resolve, reject) => {
-
-        let body = "";
-
-        req.on("data", chunk => {
-
-            body += chunk;
-
-            if (body.length > 1000000) {
-
-                reject(
-                    new Error("Request body too large.")
-                );
-
-                req.destroy();
-            }
-        });
-
-        req.on("end", () => {
-
-            if (!body) {
-
-                resolve({});
-
-                return;
-            }
-
-            try {
-
-                resolve(JSON.parse(body));
-
-            } catch (error) {
-
-                reject(
-                    new Error("Invalid JSON body.")
-                );
-            }
-        });
-
-        req.on("error", reject);
-    });
-}
+// ============================================================
+// OPENROUTER REQUEST
+// ============================================================
 
 async function askExternalBrain(world) {
 
@@ -290,81 +356,96 @@ async function askExternalBrain(world) {
         throw new Error(
             "OPENROUTER_API_KEY is missing."
         );
+
     }
 
-    const response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-            method: "POST",
+    const requestBody = {
 
-            headers: {
+        model: MODEL,
 
-                "Content-Type": "application/json",
+        messages: [
 
-                "Authorization":
-                    "Bearer " + OPENROUTER_API_KEY,
-
-                "HTTP-Referer":
-                    "https://project-perfect-world-ai.onrender.com",
-
-                "X-Title":
-                    "Project Perfect World God AI"
+            {
+                role: "system",
+                content: MASTER_PROMPT
             },
 
-            body: JSON.stringify({
+            {
+                role: "user",
+                content:
+                    "Current world state:\n" +
+                    JSON.stringify(
+                        world,
+                        null,
+                        2
+                    )
+            }
 
-                model: MODEL,
+        ],
 
-                messages: [
+        temperature: 0.3,
 
-                    {
-                        role: "system",
-                        content: MASTER_PROMPT
-                    },
-
-                    {
-                        role: "user",
-                        content:
-                            "CURRENT WORLD STATE:\n" +
-                            JSON.stringify(
-                                world,
-                                null,
-                                2
-                            )
-                    }
-
-                ],
-
-                temperature: 0.3
-
-            })
+        response_format: {
+            type: "json_object"
         }
-    );
 
-    const responseText =
+    };
+
+    const response =
+        await fetch(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+
+                method: "POST",
+
+                headers: {
+
+                    "Authorization":
+                        `Bearer ${OPENROUTER_API_KEY}`,
+
+                    "Content-Type":
+                        "application/json",
+
+                    "HTTP-Referer":
+                        "https://project-perfect-world-ai.onrender.com",
+
+                    "X-Title":
+                        "Project Perfect World"
+
+                },
+
+                body:
+                    JSON.stringify(
+                        requestBody
+                    )
+
+            }
+        );
+
+    const rawText =
         await response.text();
 
     if (!response.ok) {
 
         throw new Error(
-            "OpenRouter error " +
-            response.status +
-            ": " +
-            responseText
+            `OpenRouter ${response.status}: ${rawText}`
         );
+
     }
 
     let data;
 
     try {
 
-        data = JSON.parse(responseText);
+        data =
+            JSON.parse(rawText);
 
     } catch (error) {
 
         throw new Error(
             "OpenRouter returned invalid JSON."
         );
+
     }
 
     if (
@@ -376,276 +457,298 @@ async function askExternalBrain(world) {
         throw new Error(
             "OpenRouter returned no AI message."
         );
+
     }
 
-    return data.choices[0].message.content;
-}
+    let content =
+        data.choices[0].message.content;
 
-function parseDecision(answer) {
-
-    if (typeof answer !== "string") {
+    if (typeof content !== "string") {
 
         throw new Error(
-            "AI response was not text."
+            "AI response content is not text."
         );
+
     }
 
-    let cleaned = answer.trim();
+    content =
+        content.trim();
 
-    if (cleaned.startsWith("```")) {
+    // Remove accidental markdown fences
+    if (content.startsWith("```")) {
 
-        cleaned = cleaned
-            .replace(/^```json\s*/i, "")
-            .replace(/^```\s*/i, "")
-            .replace(/\s*```$/i, "")
-            .trim();
+        content =
+            content
+                .replace(/^```json/i, "")
+                .replace(/^```/i, "")
+                .replace(/```$/i, "")
+                .trim();
+
     }
+
+    let parsed;
 
     try {
 
-        return JSON.parse(cleaned);
+        parsed =
+            JSON.parse(content);
 
     } catch (error) {
 
-        return {
+        throw new Error(
+            "AI returned invalid decision JSON: " +
+            content
+        );
 
-            reasoning: cleaned,
-
-            priority: "medium",
-
-            goal:
-                "Analyze the current world.",
-
-            actions: [],
-
-            memory: []
-        };
     }
+
+    return parsed;
 }
 
-const server = http.createServer(
-    async (req, res) => {
+// ============================================================
+// VALID COMMANDS
+// ============================================================
 
-        const path = getPath(req);
+const ALLOWED_COMMANDS = new Set([
 
-        // ==========================================
-        // CORS PREFLIGHT
-        // ==========================================
+    "CREATE_NPC",
 
-        if (req.method === "OPTIONS") {
+    "CREATE_LOCATION",
 
-            return sendJSON(res, 200, {
-                success: true,
-                cors: "enabled"
-            });
-        }
+    "CREATE_BUILDING",
 
-        // ==========================================
-        // ROOT
-        // ==========================================
+    "CREATE_ROAD",
+
+    "CREATE_QUEST",
+
+    "CREATE_EVENT",
+
+    "SET_WEATHER",
+
+    "SET_NPC_GOAL",
+
+    "ASSIGN_JOB",
+
+    "WORLD_MAINTENANCE"
+
+]);
+
+// ============================================================
+// VALIDATE DECISION
+// ============================================================
+
+function validateDecision(data) {
+
+    if (
+        !data ||
+        typeof data !== "object"
+    ) {
+        throw new Error(
+            "Decision is not an object."
+        );
+    }
+
+    if (
+        !data.decision ||
+        typeof data.decision !== "object"
+    ) {
+        throw new Error(
+            "Missing decision object."
+        );
+    }
+
+    const decision =
+        data.decision;
+
+    if (
+        typeof decision.goal !== "string"
+    ) {
+        decision.goal =
+            "Maintain the world";
+    }
+
+    if (
+        typeof decision.priority !== "string"
+    ) {
+        decision.priority =
+            "MEDIUM";
+    }
+
+    if (
+        typeof decision.reasoning !== "string"
+    ) {
+        decision.reasoning =
+            "Maintain and improve the world.";
+    }
+
+    if (
+        !Array.isArray(decision.actions)
+    ) {
+
+        decision.actions = [];
+
+    }
+
+    // Safety limit
+    decision.actions =
+        decision.actions.slice(0, 8);
+
+    const validActions = [];
+
+    for (
+        const action
+        of decision.actions
+    ) {
 
         if (
-            req.method === "GET" &&
-            path === "/"
+            !action ||
+            typeof action !== "object"
         ) {
-
-            return sendJSON(res, 200, {
-
-                online: true,
-
-                system:
-                    "Project Perfect World",
-
-                godAI:
-                    "ONLINE",
-
-                externalBrain:
-                    OPENROUTER_API_KEY
-                        ? "CONFIGURED"
-                        : "NOT_CONFIGURED",
-
-                message:
-                    "God AI server is running.",
-
-                version:
-                    "3.0"
-            });
+            continue;
         }
 
-        // ==========================================
-        // HEALTH
-        // ==========================================
+        const command =
+            String(
+                action.command || ""
+            ).toUpperCase();
 
         if (
-            req.method === "GET" &&
-            path === "/health"
+            !ALLOWED_COMMANDS.has(
+                command
+            )
         ) {
-
-            return sendJSON(res, 200, {
-
-                online: true,
-
-                system:
-                    "Project Perfect World",
-
-                godAI:
-                    "ONLINE",
-
-                externalBrain:
-                    OPENROUTER_API_KEY
-                        ? "CONNECTED"
-                        : "NOT_CONNECTED",
-
-                serverVersion:
-                    "3.0",
-
-                cors:
-                    "ENABLED"
-            });
+            continue;
         }
 
-        // ==========================================
-        // GOD AI
-        // ==========================================
+        let parameters =
+            action.parameters;
 
         if (
-            req.method === "POST" &&
-            path === "/godai"
+            !parameters ||
+            typeof parameters !== "object"
         ) {
-
-            const providedToken =
-                req.headers["x-god-ai-token"];
-
-            if (!GOD_AI_TOKEN) {
-
-                return sendJSON(res, 500, {
-
-                    success: false,
-
-                    error:
-                        "GOD_AI_TOKEN is not configured."
-                });
-            }
-
-            if (
-                !providedToken ||
-                providedToken !== GOD_AI_TOKEN
-            ) {
-
-                return sendJSON(res, 401, {
-
-                    success: false,
-
-                    error:
-                        "Unauthorized."
-                });
-            }
-
-            try {
-
-                const world =
-                    await readBody(req);
-
-                const aiAnswer =
-                    await askExternalBrain(
-                        world
-                    );
-
-                const decision =
-                    parseDecision(
-                        aiAnswer
-                    );
-
-                return sendJSON(res, 200, {
-
-                    success: true,
-
-                    system:
-                        "Project Perfect World",
-
-                    godAI:
-                        "ONLINE",
-
-                    brain:
-                        MODEL,
-
-                    decision:
-                        decision
-                });
-
-            } catch (error) {
-
-                console.error(
-                    "GOD AI ERROR:",
-                    error
-                );
-
-                return sendJSON(res, 500, {
-
-                    success: false,
-
-                    error:
-                        error.message
-                });
-            }
+            parameters = {};
         }
 
-        // ==========================================
-        // 404
-        // ==========================================
+        validActions.push({
 
-        return sendJSON(res, 404, {
+            command,
+
+            parameters
+
+        });
+
+    }
+
+    decision.actions =
+        validActions;
+
+    return data;
+}
+
+// ============================================================
+// GOD AI ENDPOINT
+// ============================================================
+
+app.post("/godai", async (req, res) => {
+
+    try {
+
+        if (!authenticate(req, res)) {
+            return;
+        }
+
+        const world =
+            req.body.world ||
+            req.body;
+
+        if (
+            !world ||
+            typeof world !== "object"
+        ) {
+
+            return res.status(400).json({
+
+                error:
+                    "World state is required."
+
+            });
+
+        }
+
+        console.log(
+            "[GOD AI] World received."
+        );
+
+        const decision =
+            await askExternalBrain(
+                world
+            );
+
+        const validated =
+            validateDecision(
+                decision
+            );
+
+        console.log(
+            "[GOD AI] Goal:",
+            validated.decision.goal
+        );
+
+        console.log(
+            "[GOD AI] Actions:",
+            validated.decision.actions.length
+        );
+
+        res.json(validated);
+
+    } catch (error) {
+
+        console.error(
+            "[GOD AI] ERROR:",
+            error.message
+        );
+
+        res.status(500).json({
 
             error:
-                "Endpoint not found",
+                "God AI request failed.",
 
-            path:
-                path
+            message:
+                error.message
+
         });
+
     }
-);
 
-server.listen(PORT, () => {
+});
 
+// ============================================================
+// SERVER
+// ============================================================
+
+app.listen(PORT, () => {
+
+    console.log("================================");
+    console.log("PROJECT PERFECT WORLD");
+    console.log("GOD AI SERVER v4");
+    console.log("================================");
     console.log(
-        "================================"
-    );
-
-    console.log(
-        "PROJECT PERFECT WORLD"
-    );
-
-    console.log(
-        "EXTERNAL GOD AI"
-    );
-
-    console.log(
-        "================================"
-    );
-
-    console.log(
-        "SERVER: ONLINE"
-    );
-
-    console.log(
-        "BRAIN:",
-        MODEL
-    );
-
-    console.log(
-        "PORT:",
+        "Port:",
         PORT
     );
-
     console.log(
-        "VERSION: 3.0"
+        "OpenRouter:",
+        OPENROUTER_API_KEY
+            ? "CONFIGURED"
+            : "MISSING"
     );
-
     console.log(
-        "CORS: ENABLED"
+        "God AI Token:",
+        GOD_AI_TOKEN
+            ? "CONFIGURED"
+            : "MISSING"
     );
+    console.log("================================");
 
-    console.log(
-        "================================"
-    );
 });
