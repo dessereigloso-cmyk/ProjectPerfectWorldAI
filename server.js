@@ -6,686 +6,174 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-const PORT = process.env.PORT || 3000;
-
-/*
-===========================================================
-PROJECT PERFECT WORLD
-GOD AI SERVER v5.0
-MULTI-MODEL AI GATEWAY
-===========================================================
-
-ROBLOX
-   ↓
-/godai
-   ↓
-AI ROUTER
-   ↓
-OpenRouter primary/fallback
-   ↓
-Structured God AI decision
-   ↓
-Roblox GodAI_Executor
-===========================================================
-*/
-
-// =========================================================
-// CONFIGURATION
-// =========================================================
-
-const SERVER_VERSION = "5.0";
+const PORT = process.env.PORT || 10000;
 
 const GOD_AI_TOKEN = process.env.GOD_AI_TOKEN || "";
-
-const OPENROUTER_API_KEY =
-    process.env.OPENROUTER_API_KEY || "";
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 
 const OPENROUTER_URL =
     "https://openrouter.ai/api/v1/chat/completions";
 
+const GEMINI_URL =
+    "https://generativelanguage.googleapis.com/v1beta/models";
+
+const SERVER_VERSION = "6.0";
+
+const MAX_ACTIONS = 8;
+const PROVIDER_COOLDOWN_MS = 30 * 60 * 1000;
+
 /*
-OpenRouter can receive multiple models in priority order.
-
-We keep openrouter/free first because that is the setup
-we were already using.
-
-Additional model names can be supplied through:
-
-OPENROUTER_FALLBACK_MODELS
-
-Example:
-
-openrouter/free,google/gemini-2.0-flash-exp:free,another/model:free
-
-IMPORTANT:
-Only use models that are actually available to your account.
+============================================================
+ PROJECT PERFECT WORLD
+ GOD AI SERVER v6.0
+ TRUE MULTI-PROVIDER AI ROUTER
+============================================================
 */
 
-const DEFAULT_MODELS = [
-    "openrouter/free"
-];
-
-const configuredFallbackModels =
-    (process.env.OPENROUTER_FALLBACK_MODELS || "")
-        .split(",")
-        .map(x => x.trim())
-        .filter(Boolean);
-
-const MODEL_CHAIN = [
-    ...DEFAULT_MODELS,
-    ...configuredFallbackModels
-].filter(
-    (model, index, array) =>
-        array.indexOf(model) === index
-);
-
-// =========================================================
-// AI ROUTER STATE
-// =========================================================
-
-const AI_STATE = {
-    status: "READY",
-
-    activeModel: null,
-
-    lastSuccessfulModel: null,
-
-    lastProvider: "OpenRouter",
-
-    lastRequestAt: null,
-
-    lastSuccessAt: null,
-
-    lastFailureAt: null,
+const state = {
+    startedAt: Date.now(),
 
     totalRequests: 0,
-
     successfulRequests: 0,
-
     failedRequests: 0,
-
     fallbackCount: 0,
 
-    cooldownUntil: 0,
+    activeProvider: null,
+    activeModel: null,
+
+    lastSuccessfulProvider: null,
+    lastSuccessfulModel: null,
 
     lastError: null,
 
-    modelHealth: {}
+    providers: {
+        openrouter: {
+            configured: !!OPENROUTER_API_KEY,
+            cooldownUntil: 0,
+            successes: 0,
+            failures: 0
+        },
+
+        gemini: {
+            configured: !!GEMINI_API_KEY,
+            cooldownUntil: 0,
+            successes: 0,
+            failures: 0
+        }
+    }
 };
 
-// =========================================================
-// MODEL HEALTH
-// =========================================================
+/*
+============================================================
+ AUTH
+============================================================
+*/
 
-function getModelHealth(model) {
-
-    if (!AI_STATE.modelHealth[model]) {
-
-        AI_STATE.modelHealth[model] = {
-            status: "READY",
-            failures: 0,
-            successes: 0,
-            cooldownUntil: 0,
-            lastError: null,
-            lastSuccessAt: null,
-            lastFailureAt: null
-        };
-    }
-
-    return AI_STATE.modelHealth[model];
-}
-
-function setModelFailure(model, errorMessage, cooldownSeconds) {
-
-    const health = getModelHealth(model);
-
-    health.status = "COOLDOWN";
-
-    health.failures += 1;
-
-    health.lastError = errorMessage;
-
-    health.lastFailureAt = new Date().toISOString();
-
-    health.cooldownUntil =
-        Date.now() + (cooldownSeconds * 1000);
-}
-
-function setModelSuccess(model) {
-
-    const health = getModelHealth(model);
-
-    health.status = "HEALTHY";
-
-    health.successes += 1;
-
-    health.lastSuccessAt =
-        new Date().toISOString();
-
-    health.lastError = null;
-
-    health.cooldownUntil = 0;
-}
-
-function isModelAvailable(model) {
-
-    const health = getModelHealth(model);
-
-    return Date.now() >= health.cooldownUntil;
-}
-
-// =========================================================
-// AUTHENTICATION
-// =========================================================
-
-function authenticate(req) {
-
+function isAuthorized(req) {
     if (!GOD_AI_TOKEN) {
-
-        console.warn(
-            "[AUTH] GOD_AI_TOKEN is not configured."
-        );
-
         return false;
     }
 
-    const provided =
-        req.headers["x-god-ai-token"] ||
-        req.headers["authorization"]?.replace(
-            /^Bearer\s+/i,
-            ""
-        );
+    const headerToken =
+        req.headers["x-god-ai-token"];
 
-    return provided === GOD_AI_TOKEN;
+    const authorization =
+        req.headers.authorization || "";
+
+    const bearer =
+        authorization.startsWith("Bearer ")
+            ? authorization.substring(7)
+            : "";
+
+    return (
+        headerToken === GOD_AI_TOKEN ||
+        bearer === GOD_AI_TOKEN
+    );
 }
 
-// =========================================================
-// GENERAL HELPERS
-// =========================================================
+/*
+============================================================
+ PROVIDER HELPERS
+============================================================
+*/
 
-function clampNumber(value, fallback = 0) {
-
-    const number = Number(value);
-
-    if (!Number.isFinite(number)) {
-        return fallback;
-    }
-
-    return number;
+function isCoolingDown(provider) {
+    return state.providers[provider].cooldownUntil > Date.now();
 }
 
-function cleanString(value, fallback = "", maxLength = 300) {
+function cooldownSeconds(provider) {
+    const remaining =
+        state.providers[provider].cooldownUntil - Date.now();
 
-    if (value === undefined || value === null) {
-        return fallback;
-    }
-
-    return String(value)
-        .replace(/[\u0000-\u001F\u007F]/g, "")
-        .trim()
-        .slice(0, maxLength);
+    return Math.max(0, Math.ceil(remaining / 1000));
 }
 
-function normalizeCommandName(command) {
-
-    return cleanString(command)
-        .toUpperCase()
-        .replace(/\s+/g, "_");
+function setCooldown(provider, ms = PROVIDER_COOLDOWN_MS) {
+    state.providers[provider].cooldownUntil =
+        Date.now() + ms;
 }
 
-// =========================================================
-// CANONICAL COMMAND NORMALIZER
-// =========================================================
+function clearCooldown(provider) {
+    state.providers[provider].cooldownUntil = 0;
+}
 
-const ALLOWED_COMMANDS = new Set([
-    "CREATE_LOCATION",
-    "CREATE_BUILDING",
-    "CREATE_ROAD",
-    "CREATE_NPC",
-    "SET_WEATHER",
-    "SET_NPC_GOAL",
-    "ASSIGN_JOB",
-    "WORLD_MAINTENANCE"
-]);
+function markSuccess(provider, model) {
+    state.providers[provider].successes++;
 
-function normalizeAction(action) {
+    clearCooldown(provider);
 
-    if (!action || typeof action !== "object") {
-        return null;
-    }
+    state.activeProvider = provider;
+    state.activeModel = model;
 
-    const command =
-        normalizeCommandName(
-            action.command ||
-            action.type ||
-            action.action
-        );
+    state.lastSuccessfulProvider = provider;
+    state.lastSuccessfulModel = model;
 
-    if (!ALLOWED_COMMANDS.has(command)) {
-        return null;
-    }
+    state.lastError = null;
 
-    const input =
-        action.data ||
-        action.parameters ||
-        action.args ||
-        action;
+    state.successfulRequests++;
+}
 
-    const result = {
-        command: command,
-        id: cleanString(
-            input.id ||
-            input.ID ||
-            "",
-            "",
-            120
+function markFailure(provider, error) {
+    state.providers[provider].failures++;
+
+    state.lastError = error;
+
+    /*
+    Only temporarily cooldown providers that are
+    clearly unavailable/rate-limited.
+    */
+    if (
+        error &&
+        (
+            error.status === 429 ||
+            error.status === 503 ||
+            error.status === 502 ||
+            error.status === 500
         )
-    };
-
-    // -----------------------------------------------------
-    // CREATE_LOCATION
-    // -----------------------------------------------------
-
-    if (command === "CREATE_LOCATION") {
-
-        result.name =
-            cleanString(
-                input.name,
-                "Unnamed Location",
-                120
-            );
-
-        result.locationType =
-            cleanString(
-                input.locationType ||
-                input.type ||
-                "Settlement",
-                "Settlement",
-                80
-            );
-
-        result.description =
-            cleanString(
-                input.description,
-                "",
-                500
-            );
-
-        result.x =
-            clampNumber(input.x, 0);
-
-        result.y =
-            clampNumber(input.y, 0);
-
-        result.z =
-            clampNumber(input.z, 0);
+    ) {
+        setCooldown(provider);
     }
-
-    // -----------------------------------------------------
-    // CREATE_BUILDING
-    // -----------------------------------------------------
-
-    if (command === "CREATE_BUILDING") {
-
-        result.name =
-            cleanString(
-                input.name,
-                "Unnamed Building",
-                120
-            );
-
-        result.buildingType =
-            cleanString(
-                input.buildingType ||
-                input.type ||
-                "House",
-                "House",
-                80
-            );
-
-        result.location =
-            cleanString(
-                input.location,
-                "",
-                120
-            );
-
-        result.x =
-            clampNumber(input.x, 0);
-
-        result.y =
-            clampNumber(input.y, 0);
-
-        result.z =
-            clampNumber(input.z, 0);
-    }
-
-    // -----------------------------------------------------
-    // CREATE_ROAD
-    // -----------------------------------------------------
-
-    if (command === "CREATE_ROAD") {
-
-        /*
-        Canonical format:
-
-        x
-        y
-        z
-        length
-        width
-
-        We also accept:
-
-        start = {x,y,z}
-        end   = {x,y,z}
-
-        and convert it into canonical values.
-        */
-
-        let x =
-            clampNumber(input.x, 0);
-
-        let y =
-            clampNumber(input.y, 0);
-
-        let z =
-            clampNumber(input.z, 0);
-
-        let length =
-            clampNumber(input.length, 20);
-
-        let width =
-            clampNumber(input.width, 6);
-
-        if (
-            input.start &&
-            input.end
-        ) {
-
-            const sx =
-                clampNumber(input.start.x, 0);
-
-            const sy =
-                clampNumber(input.start.y, 0);
-
-            const sz =
-                clampNumber(input.start.z, 0);
-
-            const ex =
-                clampNumber(input.end.x, 0);
-
-            const ey =
-                clampNumber(input.end.y, 0);
-
-            const ez =
-                clampNumber(input.end.z, 0);
-
-            x = (sx + ex) / 2;
-
-            y = (sy + ey) / 2;
-
-            z = (sz + ez) / 2;
-
-            length =
-                Math.sqrt(
-                    Math.pow(ex - sx, 2) +
-                    Math.pow(ey - sy, 2) +
-                    Math.pow(ez - sz, 2)
-                );
-        }
-
-        result.x = x;
-        result.y = y;
-        result.z = z;
-
-        result.length =
-            Math.max(1, Math.min(length, 500));
-
-        result.width =
-            Math.max(1, Math.min(width, 50));
-    }
-
-    // -----------------------------------------------------
-    // CREATE_NPC
-    // -----------------------------------------------------
-
-    if (command === "CREATE_NPC") {
-
-        result.name =
-            cleanString(
-                input.name,
-                "Unnamed NPC",
-                80
-            );
-
-        result.job =
-            cleanString(
-                input.job,
-                "Worker",
-                100
-            );
-
-        result.goal =
-            cleanString(
-                input.goal,
-                "Survive and contribute to the settlement.",
-                300
-            );
-
-        result.location =
-            cleanString(
-                input.location,
-                "",
-                120
-            );
-
-        result.x =
-            clampNumber(input.x, 0);
-
-        result.y =
-            clampNumber(input.y, 3);
-
-        result.z =
-            clampNumber(input.z, 0);
-
-        /*
-        Optional Roblox userId.
-
-        We do NOT require it because ordinary AI NPCs
-        do not need a player's UserId.
-        */
-
-        if (input.userId !== undefined) {
-
-            const userId =
-                Number(input.userId);
-
-            if (
-                Number.isInteger(userId) &&
-                userId > 0
-            ) {
-
-                result.userId = userId;
-            }
-        }
-    }
-
-    // -----------------------------------------------------
-    // SET_WEATHER
-    // -----------------------------------------------------
-
-    if (command === "SET_WEATHER") {
-
-        result.weather =
-            cleanString(
-                input.weather ||
-                input.value ||
-                "Clear",
-                "Clear",
-                50
-            );
-    }
-
-    // -----------------------------------------------------
-    // SET_NPC_GOAL
-    // -----------------------------------------------------
-
-    if (command === "SET_NPC_GOAL") {
-
-        result.npcId =
-            cleanString(
-                input.npcId ||
-                input.id ||
-                "",
-                "",
-                120
-            );
-
-        result.goal =
-            cleanString(
-                input.goal,
-                "Continue daily duties.",
-                300
-            );
-    }
-
-    // -----------------------------------------------------
-    // ASSIGN_JOB
-    // -----------------------------------------------------
-
-    if (command === "ASSIGN_JOB") {
-
-        result.npcId =
-            cleanString(
-                input.npcId ||
-                input.id ||
-                "",
-                "",
-                120
-            );
-
-        result.job =
-            cleanString(
-                input.job,
-                "Worker",
-                100
-            );
-    }
-
-    // -----------------------------------------------------
-    // WORLD_MAINTENANCE
-    // -----------------------------------------------------
-
-    if (command === "WORLD_MAINTENANCE") {
-
-        result.reason =
-            cleanString(
-                input.reason,
-                "General world maintenance.",
-                300
-            );
-    }
-
-    return result;
 }
 
-// =========================================================
-// NORMALIZE AI DECISION
-// =========================================================
+/*
+============================================================
+ GOD AI SYSTEM PROMPT
+============================================================
+*/
 
-function normalizeDecision(raw) {
+const GOD_AI_SYSTEM = `
+You are God AI, the World Director of Project Perfect World.
 
-    if (!raw || typeof raw !== "object") {
+You are NOT allowed to generate arbitrary Lua code.
+You are NOT allowed to generate executable code.
+You are NOT allowed to use loadstring.
+You are NOT allowed to request remote code execution.
 
-        return {
-            summary: "No valid AI decision returned.",
-            actions: []
-        };
-    }
+Your job is to reason about the persistent Roblox world and
+return safe structured world-management commands.
 
-    let actions =
-        raw.actions ||
-        raw.commands ||
-        raw.decisions ||
-        [];
-
-    if (!Array.isArray(actions)) {
-        actions = [];
-    }
-
-    const normalizedActions = [];
-
-    for (const action of actions) {
-
-        if (normalizedActions.length >= 8) {
-            break;
-        }
-
-        const normalized =
-            normalizeAction(action);
-
-        if (normalized) {
-            normalizedActions.push(normalized);
-        }
-    }
-
-    return {
-        summary:
-            cleanString(
-                raw.summary ||
-                raw.reason ||
-                raw.message ||
-                "God AI decision.",
-                "God AI decision.",
-                1000
-            ),
-
-        priority:
-            cleanString(
-                raw.priority ||
-                "NORMAL",
-                "NORMAL",
-                40
-            ).toUpperCase(),
-
-        goal:
-            cleanString(
-                raw.goal ||
-                "Improve and maintain Perfect World.",
-                "Improve and maintain Perfect World.",
-                300
-            ),
-
-        actions:
-            normalizedActions
-    };
-}
-
-// =========================================================
-// GOD AI SYSTEM PROMPT
-// =========================================================
-
-function buildSystemPrompt() {
-
-    return `
-You are GOD AI, the World Director of Project Perfect World.
-
-PROJECT:
-Project Perfect World is a persistent Roblox civilization where
-players and AI NPCs live together.
-
-YOUR ROLE:
-You are the strategic reasoning layer.
-
-Roblox is the execution environment.
-Roblox is authoritative.
-You must NEVER output arbitrary Lua code.
-You must NEVER request loadstring.
-You must NEVER request remote code execution.
-You must only return structured approved commands.
-
-CORE LOOP:
+WORLD LOOP:
 
 OBSERVE
 UNDERSTAND
@@ -699,70 +187,7 @@ REMEMBER
 IMPROVE
 EXPAND
 
-CURRENT WORLD:
-
-The Roblox server will provide the current world state.
-
-YOUR OBJECTIVES:
-
-1. Keep the world functional.
-2. Grow the civilization naturally.
-3. Build useful locations and buildings.
-4. Create NPCs when appropriate.
-5. Give NPCs useful jobs and goals.
-6. Encourage exploration and specialization.
-7. Develop technology gradually.
-8. Maintain economy and resources.
-9. Create meaningful events.
-10. Avoid unnecessary AI actions.
-11. Prefer small safe changes.
-12. Never destroy large parts of the world without necessity.
-13. Never create unlimited objects in one decision.
-14. Maximum 8 actions per decision.
-
-STONE AGE RULE:
-
-The world begins in the Stone Age.
-
-Early civilization should prioritize:
-
-- food
-- shelter
-- water
-- gathering
-- hunting
-- storage
-- basic roads
-- basic tools
-- basic community buildings
-
-Do not instantly create advanced technology.
-
-NPC RULE:
-
-NPCs are individual AI agents.
-
-NPCs can eventually have:
-
-- personality
-- memory
-- goals
-- jobs
-- relationships
-- skills
-- knowledge
-- movement
-- dialogue
-- quests
-- trading
-
-However, do not simulate every detail through one request.
-
-Use ordinary Roblox systems for ordinary gameplay.
-
-Use AI reasoning for meaningful decisions.
-
-COMMANDS ALLOWED:
+You may only use these command types:
 
 CREATE_LOCATION
 CREATE_BUILDING
@@ -773,241 +198,300 @@ SET_NPC_GOAL
 ASSIGN_JOB
 WORLD_MAINTENANCE
 
-CREATE_LOCATION format:
-
-{
-  "command": "CREATE_LOCATION",
-  "id": "stable-id",
-  "name": "Village Name",
-  "locationType": "Settlement",
-  "description": "Description",
-  "x": 0,
-  "y": 0,
-  "z": 0
-}
-
-CREATE_BUILDING format:
-
-{
-  "command": "CREATE_BUILDING",
-  "id": "stable-id",
-  "name": "Building Name",
-  "buildingType": "House",
-  "location": "Village Name",
-  "x": 0,
-  "y": 3,
-  "z": 0
-}
-
-CREATE_ROAD format:
-
-{
-  "command": "CREATE_ROAD",
-  "id": "stable-id",
-  "x": 0,
-  "y": 1,
-  "z": 0,
-  "length": 30,
-  "width": 6
-}
-
-CREATE_NPC format:
-
-{
-  "command": "CREATE_NPC",
-  "id": "stable-id",
-  "name": "NPC Name",
-  "job": "Gatherer",
-  "goal": "Collect food for the settlement.",
-  "location": "Village Name",
-  "x": 5,
-  "y": 3,
-  "z": 5
-}
-
-SET_WEATHER format:
-
-{
-  "command": "SET_WEATHER",
-  "weather": "Clear"
-}
-
-SET_NPC_GOAL format:
-
-{
-  "command": "SET_NPC_GOAL",
-  "npcId": "NPC_ID",
-  "goal": "New goal"
-}
-
-ASSIGN_JOB format:
-
-{
-  "command": "ASSIGN_JOB",
-  "npcId": "NPC_ID",
-  "job": "Farmer"
-}
-
-WORLD_MAINTENANCE format:
-
-{
-  "command": "WORLD_MAINTENANCE",
-  "reason": "Repair and maintain the settlement."
-}
-
-OUTPUT:
-
 Return ONLY valid JSON.
 
-Required structure:
+Required format:
 
 {
   "summary": "short explanation",
-  "priority": "LOW|NORMAL|HIGH|CRITICAL",
-  "goal": "current strategic goal",
-  "actions": []
+  "priority": "LOW|MEDIUM|HIGH|CRITICAL",
+  "goal": "current world goal",
+  "actions": [
+    {
+      "type": "COMMAND_TYPE",
+      "id": "stable_unique_id",
+      "name": "name",
+      "description": "description",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    }
+  ]
 }
 
-Do not use Markdown.
-Do not use code fences.
-Do not include commentary outside JSON.
+Maximum 8 actions.
 
-Remember:
+Prefer small safe incremental changes.
 
-You are not the Roblox executor.
+Never duplicate existing objects.
 
-You are the strategic brain.
+If the world is empty, begin with foundational civilization
+elements such as a settlement, basic buildings, roads and
+initial NPC population.
 
-Roblox decides whether a command is safe and executes it.
+The world should evolve gradually from Stone Age toward later
+eras only when population, technology and infrastructure
+justify it.
+
+God AI is the director. Roblox is the authoritative executor.
 `;
-}
 
-// =========================================================
-// WORLD STATE BUILDER
-// =========================================================
+/*
+============================================================
+ WORLD STATE COMPACTION
+============================================================
+*/
 
-function buildWorldPrompt(body) {
-
-    const world =
-        body.world ||
-        body.worldState ||
-        {};
-
-    const compactWorld = {
-
-        day:
-            world.day ?? 1,
-
-        time:
-            world.time ?? 360,
-
-        season:
-            cleanString(
-                world.season,
-                "Spring",
-                40
-            ),
-
-        era:
-            cleanString(
-                world.era,
-                "Stone Age",
-                80
-            ),
-
-        weather:
-            cleanString(
-                world.weather,
-                "Clear",
-                50
-            ),
-
-        population:
-            clampNumber(
-                world.population,
-                0
-            ),
-
-        players:
-            clampNumber(
-                world.players,
-                0
-            ),
-
-        npcs:
-            Array.isArray(world.npcs)
-                ? world.npcs.slice(0, 100)
-                : [],
-
-        locations:
-            Array.isArray(world.locations)
-                ? world.locations.slice(0, 100)
-                : [],
-
-        buildings:
-            Array.isArray(world.buildings)
-                ? world.buildings.slice(0, 100)
-                : [],
-
-        roads:
-            Array.isArray(world.roads)
-                ? world.roads.slice(0, 100)
-                : [],
-
-        technologies:
-            Array.isArray(world.technologies)
-                ? world.technologies.slice(0, 100)
-                : [],
-
-        resources:
-            world.resources || {},
-
-        goals:
-            Array.isArray(world.goals)
-                ? world.goals.slice(0, 30)
-                : [],
-
-        recentHistory:
-            Array.isArray(world.history)
-                ? world.history.slice(-20)
-                : []
-    };
-
-    return JSON.stringify(
-        compactWorld,
-        null,
-        2
-    );
-}
-
-// =========================================================
-// HTTP AI REQUEST
-// =========================================================
-
-async function requestOpenRouter(model, messages) {
-
-    if (!OPENROUTER_API_KEY) {
-
-        throw new Error(
-            "OPENROUTER_API_KEY is not configured."
-        );
+function compactWorld(world) {
+    if (!world || typeof world !== "object") {
+        return {
+            day: 1,
+            time: 360,
+            season: "Spring",
+            era: "Stone Age",
+            weather: "Clear",
+            population: 0,
+            players: 0,
+            npcs: [],
+            locations: [],
+            buildings: [],
+            roads: []
+        };
     }
 
-    const controller =
-        new AbortController();
+    function keys(value) {
+        if (!value || typeof value !== "object") {
+            return [];
+        }
 
-    const timeout =
-        setTimeout(
-            () => controller.abort(),
-            45000
-        );
+        return Object.keys(value).slice(0, 100);
+    }
+
+    return {
+        version: world.Version || 3,
+        day: world.Day || 1,
+        time: world.Time || 360,
+        season: world.Season || "Spring",
+        era: world.Era || "Stone Age",
+        weather: world.Weather || "Clear",
+
+        population:
+            world.Population || 0,
+
+        players:
+            world.Players || 0,
+
+        npcs:
+            keys(world.NPCs),
+
+        locations:
+            keys(world.Locations),
+
+        buildings:
+            keys(world.Buildings),
+
+        roads:
+            keys(world.Roads),
+
+        technologies:
+            keys(world.Technologies),
+
+        quests:
+            keys(world.Quests),
+
+        events:
+            keys(world.Events),
+
+        completedActions:
+            Array.isArray(world.CompletedActions)
+                ? world.CompletedActions.slice(-50)
+                : [],
+
+        actionHistory:
+            Array.isArray(world.ActionHistory)
+                ? world.ActionHistory.slice(-50)
+                : []
+    };
+}
+
+/*
+============================================================
+ JSON EXTRACTION
+============================================================
+*/
+
+function extractJSON(text) {
+    if (!text || typeof text !== "string") {
+        throw new Error("AI returned empty response");
+    }
+
+    let cleaned = text.trim();
+
+    if (cleaned.startsWith("```")) {
+        cleaned = cleaned
+            .replace(/^```json/i, "")
+            .replace(/^```/i, "")
+            .replace(/```$/i, "")
+            .trim();
+    }
 
     try {
+        return JSON.parse(cleaned);
+    } catch (firstError) {
+        const start = cleaned.indexOf("{");
+        const end = cleaned.lastIndexOf("}");
 
-        const response =
-            await fetch(
-                OPENROUTER_URL,
-                {
+        if (start >= 0 && end > start) {
+            return JSON.parse(
+                cleaned.substring(start, end + 1)
+            );
+        }
+
+        throw firstError;
+    }
+}
+
+/*
+============================================================
+ COMMAND VALIDATION
+============================================================
+*/
+
+const ALLOWED_COMMANDS = new Set([
+    "CREATE_LOCATION",
+    "CREATE_BUILDING",
+    "CREATE_ROAD",
+    "CREATE_NPC",
+    "SET_WEATHER",
+    "SET_NPC_GOAL",
+    "ASSIGN_JOB",
+    "WORLD_MAINTENANCE"
+]);
+
+function normalizeDecision(raw) {
+    const decision = {
+        summary:
+            typeof raw.summary === "string"
+                ? raw.summary.substring(0, 500)
+                : "God AI world decision.",
+
+        priority:
+            typeof raw.priority === "string"
+                ? raw.priority.toUpperCase()
+                : "MEDIUM",
+
+        goal:
+            typeof raw.goal === "string"
+                ? raw.goal.substring(0, 300)
+                : "Improve the world.",
+
+        actions: []
+    };
+
+    const inputActions =
+        Array.isArray(raw.actions)
+            ? raw.actions
+            : [];
+
+    for (
+        let i = 0;
+        i < Math.min(inputActions.length, MAX_ACTIONS);
+        i++
+    ) {
+        const action = inputActions[i];
+
+        if (!action || typeof action !== "object") {
+            continue;
+        }
+
+        const type =
+            typeof action.type === "string"
+                ? action.type.toUpperCase()
+                : "";
+
+        if (!ALLOWED_COMMANDS.has(type)) {
+            continue;
+        }
+
+        const safe = {
+            type,
+
+            id:
+                typeof action.id === "string"
+                    ? action.id.substring(0, 100)
+                    : `${type}_${Date.now()}_${i}`,
+
+            name:
+                typeof action.name === "string"
+                    ? action.name.substring(0, 150)
+                    : "God AI Object",
+
+            description:
+                typeof action.description === "string"
+                    ? action.description.substring(0, 500)
+                    : "",
+
+            x: Number(action.x) || 0,
+            y: Number(action.y) || 0,
+            z: Number(action.z) || 0
+        };
+
+        for (const key of [
+            "location",
+            "locationType",
+            "buildingType",
+            "npcType",
+            "job",
+            "goal",
+            "weather",
+            "roadType",
+            "target"
+        ]) {
+            if (typeof action[key] === "string") {
+                safe[key] =
+                    action[key].substring(0, 150);
+            }
+        }
+
+        decision.actions.push(safe);
+    }
+
+    return decision;
+}
+
+/*
+============================================================
+ OPENROUTER
+============================================================
+*/
+
+async function callOpenRouter(world) {
+    const models = [];
+
+    models.push("openrouter/free");
+
+    const fallbackModels =
+        (process.env.OPENROUTER_FALLBACK_MODELS || "")
+            .split(",")
+            .map(x => x.trim())
+            .filter(Boolean);
+
+    for (const model of fallbackModels) {
+        if (!models.includes(model)) {
+            models.push(model);
+        }
+    }
+
+    let lastError = null;
+
+    for (const model of models) {
+        console.log(
+            `[AI ROUTER] TRY openrouter/${model}`
+        );
+
+        try {
+            const response =
+                await fetch(OPENROUTER_URL, {
                     method: "POST",
 
                     headers: {
@@ -1017,738 +501,605 @@ async function requestOpenRouter(model, messages) {
                         "Content-Type":
                             "application/json",
 
+                        "HTTP-Referer":
+                            "https://project-perfect-world-ai.onrender.com",
+
                         "X-Title":
                             "Project Perfect World God AI"
                     },
 
                     body: JSON.stringify({
+                        model,
 
-                        model: model,
+                        messages: [
+                            {
+                                role: "system",
+                                content: GOD_AI_SYSTEM
+                            },
+                            {
+                                role: "user",
+                                content:
+                                    JSON.stringify({
+                                        world:
+                                            compactWorld(world)
+                                    })
+                            }
+                        ],
 
-                        messages: messages,
+                        max_tokens: 1800
+                    })
+                });
 
-                        temperature: 0.2,
+            const text =
+                await response.text();
 
-                        max_tokens: 2500,
-
-                        response_format: {
-                            type: "json_object"
-                        }
-                    }),
-
-                    signal: controller.signal
-                }
-            );
-
-        const text =
-            await response.text();
-
-        let data = null;
-
-        try {
-            data = JSON.parse(text);
-        } catch {
-            data = null;
-        }
-
-        if (!response.ok) {
-
-            const message =
-                data?.error?.message ||
-                data?.message ||
-                text ||
-                `HTTP ${response.status}`;
-
-            const error =
-                new Error(message);
-
-            error.status =
-                response.status;
-
-            error.responseData =
-                data;
-
-            throw error;
-        }
-
-        if (
-            !data ||
-            !data.choices ||
-            !data.choices[0] ||
-            !data.choices[0].message
-        ) {
-
-            throw new Error(
-                "AI response did not contain choices[0].message."
-            );
-        }
-
-        return {
-            content:
-                data.choices[0].message.content,
-
-            model:
-                data.model ||
-                model,
-
-            provider:
-                "OpenRouter"
-        };
-
-    } finally {
-
-        clearTimeout(timeout);
-    }
-}
-
-// =========================================================
-// ERROR CLASSIFICATION
-// =========================================================
-
-function classifyAIError(error) {
-
-    const status =
-        Number(error?.status || 0);
-
-    const message =
-        String(
-            error?.message || ""
-        ).toLowerCase();
-
-    if (
-        status === 429 ||
-        message.includes("rate limit") ||
-        message.includes("quota") ||
-        message.includes("free-models-per-day")
-    ) {
-
-        return {
-            type: "RATE_LIMIT",
-            cooldownSeconds: 1800
-        };
-    }
-
-    if (
-        status === 401 ||
-        status === 403 ||
-        message.includes("unauthorized") ||
-        message.includes("invalid api key")
-    ) {
-
-        return {
-            type: "AUTH",
-            cooldownSeconds: 3600
-        };
-    }
-
-    if (
-        status >= 500 ||
-        message.includes("timeout") ||
-        message.includes("aborted") ||
-        message.includes("temporarily")
-    ) {
-
-        return {
-            type: "TEMPORARY",
-            cooldownSeconds: 120
-        };
-    }
-
-    if (
-        status === 404 ||
-        message.includes("model not found")
-    ) {
-
-        return {
-            type: "MODEL_UNAVAILABLE",
-            cooldownSeconds: 3600
-        };
-    }
-
-    return {
-        type: "UNKNOWN",
-        cooldownSeconds: 120
-    };
-}
-
-// =========================================================
-// AI ROUTER
-// =========================================================
-
-async function runAIRouter(messages) {
-
-    AI_STATE.totalRequests += 1;
-
-    AI_STATE.lastRequestAt =
-        new Date().toISOString();
-
-    if (
-        AI_STATE.cooldownUntil &&
-        Date.now() < AI_STATE.cooldownUntil
-    ) {
-
-        throw new Error(
-            "AI router is currently in cooldown."
-        );
-    }
-
-    if (!MODEL_CHAIN.length) {
-
-        throw new Error(
-            "No AI models are configured."
-        );
-    }
-
-    let attempted = 0;
-
-    for (const model of MODEL_CHAIN) {
-
-        if (!isModelAvailable(model)) {
-
-            console.log(
-                `[AI ROUTER] SKIP ${model} - COOLDOWN`
-            );
-
-            continue;
-        }
-
-        attempted += 1;
-
-        console.log(
-            `[AI ROUTER] TRY ${model}`
-        );
-
-        try {
-
-            const result =
-                await requestOpenRouter(
-                    model,
-                    messages
+            if (!response.ok) {
+                const error = new Error(
+                    `OpenRouter HTTP ${response.status}: ${text.substring(0, 500)}`
                 );
 
-            setModelSuccess(model);
+                error.status =
+                    response.status;
 
-            AI_STATE.status =
-                "ONLINE";
+                throw error;
+            }
 
-            AI_STATE.activeModel =
-                result.model;
+            const data =
+                JSON.parse(text);
 
-            AI_STATE.lastSuccessfulModel =
-                result.model;
+            const content =
+                data?.choices?.[0]?.message?.content;
 
-            AI_STATE.lastProvider =
-                result.provider;
+            if (!content) {
+                throw new Error(
+                    "OpenRouter returned no content."
+                );
+            }
 
-            AI_STATE.lastSuccessAt =
-                new Date().toISOString();
-
-            AI_STATE.successfulRequests += 1;
+            const json =
+                extractJSON(content);
 
             console.log(
-                `[AI ROUTER] SUCCESS ${result.model}`
+                `[AI ROUTER] SUCCESS openrouter/${model}`
+            );
+
+            return {
+                provider: "OpenRouter",
+                providerId: "openrouter",
+                model,
+                decision: normalizeDecision(json)
+            };
+
+        } catch (error) {
+            lastError = error;
+
+            console.log(
+                `[AI ROUTER] FAIL openrouter/${model}:`,
+                error.message
+            );
+        }
+    }
+
+    throw lastError ||
+        new Error("OpenRouter unavailable.");
+}
+
+/*
+============================================================
+ GEMINI
+============================================================
+*/
+
+async function callGemini(world) {
+    /*
+    We use the current Gemini 3.5 Flash-Lite family here.
+    Google documents generateContent through this endpoint.
+    */
+
+    const models = [];
+
+    const configuredModels =
+        (process.env.GEMINI_MODELS || "")
+            .split(",")
+            .map(x => x.trim())
+            .filter(Boolean);
+
+    if (configuredModels.length > 0) {
+        models.push(...configuredModels);
+    } else {
+        models.push("gemini-3.5-flash-lite");
+    }
+
+    let lastError = null;
+
+    for (const model of models) {
+        console.log(
+            `[AI ROUTER] TRY gemini/${model}`
+        );
+
+        try {
+            const response =
+                await fetch(
+                    `${GEMINI_URL}/${model}:generateContent`,
+                    {
+                        method: "POST",
+
+                        headers: {
+                            "x-goog-api-key":
+                                GEMINI_API_KEY,
+
+                            "Content-Type":
+                                "application/json"
+                        },
+
+                        body: JSON.stringify({
+                            systemInstruction: {
+                                parts: [
+                                    {
+                                        text:
+                                            GOD_AI_SYSTEM
+                                    }
+                                ]
+                            },
+
+                            contents: [
+                                {
+                                    role: "user",
+
+                                    parts: [
+                                        {
+                                            text:
+                                                JSON.stringify({
+                                                    world:
+                                                        compactWorld(world)
+                                                })
+                                        }
+                                    ]
+                                }
+                            ],
+
+                            generationConfig: {
+                                responseMimeType:
+                                    "application/json",
+
+                                maxOutputTokens:
+                                    1800
+                            }
+                        })
+                    }
+                );
+
+            const text =
+                await response.text();
+
+            if (!response.ok) {
+                const error = new Error(
+                    `Gemini HTTP ${response.status}: ${text.substring(0, 500)}`
+                );
+
+                error.status =
+                    response.status;
+
+                throw error;
+            }
+
+            const data =
+                JSON.parse(text);
+
+            const content =
+                data?.candidates?.[0]
+                    ?.content
+                    ?.parts
+                    ?.map(part => part.text || "")
+                    .join("")
+                    .trim();
+
+            if (!content) {
+                throw new Error(
+                    "Gemini returned no content."
+                );
+            }
+
+            const json =
+                extractJSON(content);
+
+            console.log(
+                `[AI ROUTER] SUCCESS gemini/${model}`
+            );
+
+            return {
+                provider: "Google Gemini",
+                providerId: "gemini",
+                model,
+                decision: normalizeDecision(json)
+            };
+
+        } catch (error) {
+            lastError = error;
+
+            console.log(
+                `[AI ROUTER] FAIL gemini/${model}:`,
+                error.message
+            );
+        }
+    }
+
+    throw lastError ||
+        new Error("Gemini unavailable.");
+}
+
+/*
+============================================================
+ PROVIDER ROUTER
+============================================================
+*/
+
+async function askGodAI(world) {
+    const providers = [];
+
+    if (
+        state.providers.openrouter.configured &&
+        !isCoolingDown("openrouter")
+    ) {
+        providers.push("openrouter");
+    }
+
+    if (
+        state.providers.gemini.configured &&
+        !isCoolingDown("gemini")
+    ) {
+        providers.push("gemini");
+    }
+
+    if (providers.length === 0) {
+        const error = new Error(
+            "All configured AI providers are currently unavailable."
+        );
+
+        error.code = "ALL_PROVIDERS_COOLDOWN";
+
+        throw error;
+    }
+
+    let lastError = null;
+
+    for (let i = 0; i < providers.length; i++) {
+        const provider =
+            providers[i];
+
+        if (i > 0) {
+            state.fallbackCount++;
+
+            console.log(
+                `[AI ROUTER] FALLBACK → ${provider}`
+            );
+        }
+
+        try {
+            let result;
+
+            if (provider === "openrouter") {
+                result =
+                    await callOpenRouter(world);
+            }
+
+            if (provider === "gemini") {
+                result =
+                    await callGemini(world);
+            }
+
+            if (!result) {
+                throw new Error(
+                    `Unknown provider: ${provider}`
+                );
+            }
+
+            markSuccess(
+                provider,
+                result.model
             );
 
             return result;
 
         } catch (error) {
+            lastError = error;
 
-            const classification =
-                classifyAIError(error);
-
-            const message =
-                cleanString(
-                    error?.message,
-                    "Unknown AI error",
-                    500
-                );
-
-            AI_STATE.lastFailureAt =
-                new Date().toISOString();
-
-            AI_STATE.lastError =
-                message;
-
-            AI_STATE.failedRequests += 1;
-
-            setModelFailure(
-                model,
-                message,
-                classification.cooldownSeconds
+            markFailure(
+                provider,
+                error
             );
 
-            console.warn(
-                `[AI ROUTER] FAILED ${model} | ${classification.type} | ${message}`
+            console.log(
+                `[AI ROUTER] PROVIDER FAILED ${provider}: ${error.message}`
             );
-
-            /*
-            Move to the next configured model.
-
-            This is legitimate failover between configured
-            providers/models. It does not rotate duplicate
-            credentials to bypass a provider quota.
-            */
-
-            if (attempted < MODEL_CHAIN.length) {
-
-                AI_STATE.fallbackCount += 1;
-
-                console.log(
-                    "[AI ROUTER] SWITCHING TO FALLBACK"
-                );
-
-                continue;
-            }
         }
     }
 
-    AI_STATE.status =
-        "UNAVAILABLE";
-
-    AI_STATE.cooldownUntil =
-        Date.now() + 300000;
-
-    throw new Error(
-        "All configured AI models are currently unavailable."
-    );
+    throw lastError ||
+        new Error(
+            "All configured AI providers are currently unavailable."
+        );
 }
 
-// =========================================================
-// JSON EXTRACTION
-// =========================================================
-
-function parseAIJSON(content) {
-
-    if (!content) {
-
-        throw new Error(
-            "AI returned empty content."
-        );
-    }
-
-    if (typeof content === "object") {
-        return content;
-    }
-
-    let text =
-        String(content).trim();
-
-    /*
-    Remove accidental Markdown fences if a model
-    ignores the JSON-only instruction.
-    */
-
-    text =
-        text
-            .replace(/^```json\s*/i, "")
-            .replace(/^```\s*/i, "")
-            .replace(/\s*```$/i, "")
-            .trim();
-
-    try {
-
-        return JSON.parse(text);
-
-    } catch (firstError) {
-
-        /*
-        Try to recover the outermost JSON object.
-        */
-
-        const first =
-            text.indexOf("{");
-
-        const last =
-            text.lastIndexOf("}");
-
-        if (
-            first >= 0 &&
-            last > first
-        ) {
-
-            const possibleJSON =
-                text.slice(
-                    first,
-                    last + 1
-                );
-
-            try {
-
-                return JSON.parse(
-                    possibleJSON
-                );
-
-            } catch {
-                // Continue to final error.
-            }
-        }
-
-        throw new Error(
-            "AI returned invalid JSON."
-        );
-    }
-}
-
-// =========================================================
-// HEALTH ROUTE
-// =========================================================
+/*
+============================================================
+ ROOT
+============================================================
+*/
 
 app.get("/", (req, res) => {
-
     res.json({
-
-        name:
-            "Project Perfect World - God AI",
-
-        version:
-            SERVER_VERSION,
-
-        status:
-            "ONLINE",
-
-        service:
-            "God AI Multi-Provider Gateway",
-
-        endpoint:
-            "/godai"
+        ok: true,
+        project: "Project Perfect World",
+        serverVersion: SERVER_VERSION,
+        service: "God AI Multi-Provider Gateway",
+        status: "ONLINE"
     });
 });
 
+/*
+============================================================
+ HEALTH
+============================================================
+*/
+
 app.get("/health", (req, res) => {
-
-    const cooldownRemaining =
-        AI_STATE.cooldownUntil > Date.now()
-            ? Math.ceil(
-                (
-                    AI_STATE.cooldownUntil -
-                    Date.now()
-                ) / 1000
-            )
-            : 0;
-
     res.json({
-
-        status:
-            "ONLINE",
+        status: "ONLINE",
 
         serverVersion:
             SERVER_VERSION,
 
-        godAI:
-            true,
+        godAI: true,
 
-        router:
-            AI_STATE.status,
+        router: "READY",
 
-        provider:
-            AI_STATE.lastProvider,
+        providers: {
+            openrouter: {
+                configured:
+                    state.providers.openrouter.configured,
+
+                cooldownRemainingSeconds:
+                    cooldownSeconds("openrouter"),
+
+                successes:
+                    state.providers.openrouter.successes,
+
+                failures:
+                    state.providers.openrouter.failures
+            },
+
+            gemini: {
+                configured:
+                    state.providers.gemini.configured,
+
+                cooldownRemainingSeconds:
+                    cooldownSeconds("gemini"),
+
+                successes:
+                    state.providers.gemini.successes,
+
+                failures:
+                    state.providers.gemini.failures
+            }
+        },
+
+        activeProvider:
+            state.activeProvider,
 
         activeModel:
-            AI_STATE.activeModel,
+            state.activeModel,
+
+        lastSuccessfulProvider:
+            state.lastSuccessfulProvider,
 
         lastSuccessfulModel:
-            AI_STATE.lastSuccessfulModel,
-
-        modelChain:
-            MODEL_CHAIN,
-
-        openRouterConfigured:
-            Boolean(OPENROUTER_API_KEY),
-
-        tokenConfigured:
-            Boolean(GOD_AI_TOKEN),
+            state.lastSuccessfulModel,
 
         totalRequests:
-            AI_STATE.totalRequests,
+            state.totalRequests,
 
         successfulRequests:
-            AI_STATE.successfulRequests,
+            state.successfulRequests,
 
         failedRequests:
-            AI_STATE.failedRequests,
+            state.failedRequests,
 
         fallbackCount:
-            AI_STATE.fallbackCount,
-
-        cooldownRemainingSeconds:
-            cooldownRemaining,
+            state.fallbackCount,
 
         lastError:
-            AI_STATE.lastError,
+            state.lastError,
 
-        modelHealth:
-            AI_STATE.modelHealth,
+        uptimeSeconds:
+            Math.floor(
+                (Date.now() -
+                    state.startedAt) / 1000
+            ),
 
         time:
             new Date().toISOString()
     });
 });
 
-// =========================================================
-// GOD AI ROUTE
-// =========================================================
+/*
+============================================================
+ GOD AI
+============================================================
+*/
 
 app.post("/godai", async (req, res) => {
+    if (!isAuthorized(req)) {
+        return res.status(401).json({
+            ok: false,
+            error: "Unauthorized"
+        });
+    }
+
+    state.totalRequests++;
+
+    const world =
+        req.body?.world ||
+        req.body?.worldState ||
+        {};
+
+    console.log(
+        "==============================================="
+    );
+
+    console.log(
+        "[GOD AI] NEW REQUEST"
+    );
+
+    console.log(
+        "[GOD AI] World:",
+        world?.Day || 1,
+        world?.Era || "Stone Age"
+    );
 
     try {
+        const result =
+            await askGodAI(world);
 
-        // -------------------------------------------------
-        // AUTH
-        // -------------------------------------------------
+        console.log(
+            `[GOD AI] SUCCESS ${result.provider} / ${result.model}`
+        );
 
-        if (!authenticate(req)) {
-
-            return res.status(401).json({
-
-                ok: false,
-
-                error:
-                    "Unauthorized."
-            });
-        }
-
-        // -------------------------------------------------
-        // INPUT
-        // -------------------------------------------------
-
-        const worldPrompt =
-            buildWorldPrompt(req.body || {});
-
-        const userPrompt = `
-CURRENT PROJECT PERFECT WORLD STATE:
-
-${worldPrompt}
-
-TASK:
-
-Analyze the current world.
-
-Choose the most useful next actions.
-
-Do not make unnecessary changes.
-
-Return only the required JSON structure.
-`;
-
-        const messages = [
-
-            {
-                role: "system",
-
-                content:
-                    buildSystemPrompt()
-            },
-
-            {
-                role: "user",
-
-                content:
-                    userPrompt
-            }
-
-        ];
-
-        // -------------------------------------------------
-        // AI ROUTER
-        // -------------------------------------------------
-
-        const aiResult =
-            await runAIRouter(
-                messages
-            );
-
-        // -------------------------------------------------
-        // PARSE
-        // -------------------------------------------------
-
-        const rawDecision =
-            parseAIJSON(
-                aiResult.content
-            );
-
-        // -------------------------------------------------
-        // NORMALIZE
-        // -------------------------------------------------
-
-        const decision =
-            normalizeDecision(
-                rawDecision
-            );
-
-        // -------------------------------------------------
-        // RESPONSE
-        // -------------------------------------------------
-
-        return res.json({
-
+        return res.status(200).json({
             ok: true,
 
             serverVersion:
                 SERVER_VERSION,
 
+            routerStatus:
+                "READY",
+
             provider:
-                aiResult.provider,
+                result.provider,
+
+            providerId:
+                result.providerId,
 
             model:
-                aiResult.model,
-
-            routerStatus:
-                AI_STATE.status,
+                result.model,
 
             decision:
-                decision
+                result.decision,
+
+            fallbackUsed:
+                state.fallbackCount > 0,
+
+            retryable:
+                false
         });
 
     } catch (error) {
+        state.failedRequests++;
 
-        const message =
-            cleanString(
-                error?.message,
-                "Unknown server error.",
-                500
-            );
-
-        console.error(
-            "[GOD AI ERROR]",
-            message
+        console.log(
+            "[GOD AI] ALL PROVIDERS FAILED:",
+            error.message
         );
 
-        const isUnavailable =
-            message.includes(
-                "unavailable"
-            ) ||
-            message.includes(
-                "cooldown"
-            );
-
-        return res.status(
-            isUnavailable ? 503 : 500
-        ).json({
-
+        return res.status(503).json({
             ok: false,
 
             serverVersion:
                 SERVER_VERSION,
 
             routerStatus:
-                AI_STATE.status,
+                "UNAVAILABLE",
 
             error:
-                message,
+                error.message,
 
             retryable:
                 true,
 
+            activeProvider:
+                state.activeProvider,
+
             activeModel:
-                AI_STATE.activeModel,
+                state.activeModel,
 
-            lastSuccessfulModel:
-                AI_STATE.lastSuccessfulModel
+            providers: {
+                openrouterCooldown:
+                    cooldownSeconds("openrouter"),
+
+                geminiCooldown:
+                    cooldownSeconds("gemini")
+            }
         });
     }
 });
 
-// =========================================================
-// 404
-// =========================================================
+/*
+============================================================
+ START SERVER
+============================================================
+*/
 
-app.use((req, res) => {
+app.listen(PORT, () => {
+    console.log(
+        "================================================"
+    );
 
-    res.status(404).json({
+    console.log(
+        "PROJECT PERFECT WORLD"
+    );
 
-        ok: false,
+    console.log(
+        "GOD AI SERVER v6.0"
+    );
 
-        error:
-            "Endpoint not found.",
+    console.log(
+        "TRUE MULTI-PROVIDER AI ROUTER"
+    );
 
-        availableEndpoints: [
-            "GET /",
-            "GET /health",
-            "POST /godai"
-        ]
-    });
+    console.log(
+        "================================================"
+    );
+
+    console.log(
+        "Port:",
+        PORT
+    );
+
+    console.log(
+        "OpenRouter configured:",
+        !!OPENROUTER_API_KEY
+    );
+
+    console.log(
+        "Gemini configured:",
+        !!GEMINI_API_KEY
+    );
+
+    console.log(
+        "God AI token configured:",
+        !!GOD_AI_TOKEN
+    );
+
+    console.log(
+        "OpenRouter model:",
+        "openrouter/free"
+    );
+
+    console.log(
+        "Gemini model:",
+        process.env.GEMINI_MODELS ||
+            "gemini-3.5-flash-lite"
+    );
+
+    console.log(
+        "God AI endpoint: POST /godai"
+    );
+
+    console.log(
+        "Health endpoint: GET /health"
+    );
+
+    console.log(
+        "================================================"
+    );
 });
-
-// =========================================================
-// ERROR HANDLER
-// =========================================================
-
-app.use(
-    (error, req, res, next) => {
-
-        console.error(
-            "[SERVER ERROR]",
-            error
-        );
-
-        if (res.headersSent) {
-            return next(error);
-        }
-
-        res.status(500).json({
-
-            ok: false,
-
-            error:
-                "Internal server error."
-        });
-    }
-);
-
-// =========================================================
-// START
-// =========================================================
-
-app.listen(
-    PORT,
-    () => {
-
-        console.log(
-            "================================================"
-        );
-
-        console.log(
-            "PROJECT PERFECT WORLD"
-        );
-
-        console.log(
-            "GOD AI SERVER v5.0"
-        );
-
-        console.log(
-            "MULTI-MODEL AI GATEWAY"
-        );
-
-        console.log(
-            "================================================"
-        );
-
-        console.log(
-            `Port: ${PORT}`
-        );
-
-        console.log(
-            `OpenRouter configured: ${Boolean(OPENROUTER_API_KEY)}`
-        );
-
-        console.log(
-            `God AI token configured: ${Boolean(GOD_AI_TOKEN)}`
-        );
-
-        console.log(
-            `Model chain: ${MODEL_CHAIN.join(" -> ")}`
-        );
-
-        console.log(
-            "God AI endpoint: POST /godai"
-        );
-
-        console.log(
-            "Health endpoint: GET /health"
-        );
-
-        console.log(
-            "================================================"
-        );
-    }
-);
