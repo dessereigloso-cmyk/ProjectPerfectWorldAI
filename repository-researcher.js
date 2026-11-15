@@ -98,7 +98,7 @@ function createRepositoryResearchRouter(options) {
                 if (githubFile.type !== "file" || githubFile.encoding !== "base64" || typeof githubFile.content !== "string") {
                     return res.status(415).json({ ok: false, error: `Only text files are supported: ${path}` });
                 }
-                const buffer = Buffer.from(githubFile.content.replace(/\\s/g, ""), "base64");
+                const buffer = Buffer.from(githubFile.content.replace(/\s/g, ""), "base64");
                 if (buffer.length > MAX_FILE_BYTES) {
                     return res.status(413).json({ ok: false, error: `File too large: ${path}` });
                 }
