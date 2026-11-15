@@ -83,19 +83,22 @@ function createRepositoryResearchRouter(options) {
 
             for (const path of uniquePaths) {
                 const encodedPath = path.split("/").map(encodeURIComponent).join("/");
-                const url = `https://raw.githubusercontent.com/${repository}/${encodeURIComponent(ref)}/${encodedPath}`;
-                const response = await fetch(url, { signal: AbortSignal.timeout(12000) });
+                const url = `https://api.github.com/repos/${repository}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
+                const response = await fetch(url, {
+                    headers: { "Accept": "application/vnd.github+json", "User-Agent": "Project-Perfect-World-GodAI" },
+                    signal: AbortSignal.timeout(12000)
+                });
                 if (!response.ok) {
                     return res.status(502).json({
                         ok: false,
                         error: `Could not read ${path} (GitHub HTTP ${response.status})`
                     });
                 }
-                const contentType = response.headers.get("content-type") || "";
-                if (contentType.includes("application/octet-stream") || contentType.includes("image/")) {
-                    return res.status(415).json({ ok: false, error: `Non-text file rejected: ${path}` });
+                const githubFile = await response.json();
+                if (githubFile.type !== "file" || githubFile.encoding !== "base64" || typeof githubFile.content !== "string") {
+                    return res.status(415).json({ ok: false, error: `Only text files are supported: ${path}` });
                 }
-                const buffer = Buffer.from(await response.arrayBuffer());
+                const buffer = Buffer.from(githubFile.content.replace(/\\s/g, ""), "base64");
                 if (buffer.length > MAX_FILE_BYTES) {
                     return res.status(413).json({ ok: false, error: `File too large: ${path}` });
                 }
