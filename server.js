@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const createRepositoryResearchRouter = require("./repository-researcher");
 
 const app = express();
 
@@ -91,6 +92,12 @@ function isAuthorized(req) {
         bearer === GOD_AI_TOKEN
     );
 }
+
+// Read-only repository inspection endpoint; shares existing owner-token authorization.
+app.use(createRepositoryResearchRouter({
+    isAuthorized,
+    openrouterApiKey: OPENROUTER_API_KEY
+}));
 
 /*
 ============================================================
