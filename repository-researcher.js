@@ -26,6 +26,8 @@ const MAX_FILES = 5;
 const MAX_FILE_BYTES = 40000;
 const MAX_TOTAL_BYTES = 100000;
 const MAX_QUESTION_LENGTH = 700;
+const MAX_REQUESTS_PER_MINUTE = 10;
+const MAX_CONCURRENT_RESEARCH = 2;
 const REF_PATTERN = /^[A-Za-z0-9._/-]{1,100}$/;
 const PATH_PATTERN = /^[A-Za-z0-9._/-]{1,180}$/;
 
@@ -88,6 +90,9 @@ function createRepositoryResearchRouter(options) {
     const router = express.Router();
     const isAuthorized = options.isAuthorized;
     const apiKey = options.openrouterApiKey || "";
+    let rateWindowStartedAt = Date.now();
+    let requestsInWindow = 0;
+    let activeResearchRequests = 0;
 
     router.post("/research/repository", async (req, res) => {
         if (!isAuthorized(req)) {
@@ -117,6 +122,22 @@ function createRepositoryResearchRouter(options) {
         if (!apiKey) {
             return res.status(503).json({ ok: false, error: "Repository research AI provider is not configured" });
         }
+
+        const now = Date.now();
+        if (now - rateWindowStartedAt >= 60000) {
+            rateWindowStartedAt = now;
+            requestsInWindow = 0;
+        }
+        if (requestsInWindow >= MAX_REQUESTS_PER_MINUTE) {
+            res.set("Retry-After", String(Math.max(1, Math.ceil((60000 - (now - rateWindowStartedAt)) / 1000))));
+            return res.status(429).json({ ok: false, error: "Repository research rate limit exceeded", retryable: true });
+        }
+        if (activeResearchRequests >= MAX_CONCURRENT_RESEARCH) {
+            res.set("Retry-After", "5");
+            return res.status(503).json({ ok: false, error: "Repository research capacity is busy", retryable: true });
+        }
+        requestsInWindow++;
+        activeResearchRequests++;
 
         const uniquePaths = [...new Set(paths)];
         if (uniquePaths.length !== paths.length) {
@@ -198,7 +219,7 @@ function createRepositoryResearchRouter(options) {
 
             return res.json({
                 ok: true,
-                researchVersion: "1.4",
+                researchVersion: "1.5",
                 mode: "READ_ONLY",
                 repository,
                 ref,
@@ -211,6 +232,8 @@ function createRepositoryResearchRouter(options) {
         } catch (error) {
             console.error("[REPOSITORY RESEARCH]", error.message);
             return res.status(502).json({ ok: false, error: "Repository research failed", retryable: true });
+        } finally {
+            activeResearchRequests = Math.max(0, activeResearchRequests - 1);
         }
     });
 
