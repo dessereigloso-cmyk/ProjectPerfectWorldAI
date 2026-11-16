@@ -45,7 +45,13 @@ function validReport() {
 
 async function withMockFetch(mockFetch, run) {
     const originalFetch = global.fetch;
-    global.fetch = mockFetch;
+    global.fetch = (url, options) => {
+        const target = String(url);
+        if (target.startsWith("http://127.0.0.1:")) {
+            return originalFetch(url, options);
+        }
+        return mockFetch(url, options);
+    };
     try {
         await run();
     } finally {
