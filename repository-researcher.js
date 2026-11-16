@@ -56,7 +56,10 @@ function createRepositoryResearchRouter(options) {
         const question = safeString(req.body?.question, MAX_QUESTION_LENGTH);
         const paths = req.body?.paths;
 
-        if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+        const repositoryParts = repository.split("/");
+        if (repositoryParts.length !== 2 || repositoryParts.some(part =>
+            !/^[A-Za-z0-9_.-]+$/.test(part) || part === "." || part === ".."
+        )) {
             return res.status(400).json({ ok: false, error: "repository must be owner/repository" });
         }
         if (!REF_PATTERN.test(ref) || ref.includes("..") || ref.startsWith("/") || ref.endsWith("/")) {
