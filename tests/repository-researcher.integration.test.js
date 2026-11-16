@@ -477,7 +477,7 @@ test("strictly validates every required report field and nested item", async () 
     }
 });
 
-test("labels successful responses with repository researcher version 1.4", async () => {
+test("labels successful responses with repository researcher version 1.5", async () => {
     await withMockFetch(async url => {
         const target = String(url);
         if (target.startsWith("https://api.github.com/repos/")) {
@@ -502,10 +502,41 @@ test("labels successful responses with repository researcher version 1.4", async
             });
             assert.equal(response.status, 200);
             const body = await response.json();
-            assert.equal(body.researchVersion, "1.4");
+            assert.equal(body.researchVersion, "1.5");
             assert.equal(body.writesPerformed, false);
             assert.equal(body.commandsExecuted, false);
             assert.equal(body.deploymentPerformed, false);
         });
     });
+});
+
+
+test("limits repository research to ten requests per minute and returns Retry-After", async () => {
+    let githubCalls = 0;
+    await withMockFetch(async url => {
+        if (String(url).startsWith("https://api.github.com/repos/")) {
+            githubCalls += 1;
+            return jsonResponse({ message: "Not Found" }, 404);
+        }
+        throw new Error("AI provider must not be called after GitHub 404.");
+    }, async () => {
+        await withServer(() => true, "test-key", async baseUrl => {
+            let lastResponse;
+            for (let i = 0; i < 11; i++) {
+                lastResponse = await fetch(`${baseUrl}/research/repository`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        repository: "sample/project",
+                        paths: ["README.md"]
+                    })
+                });
+                if (i < 10) assert.equal(lastResponse.status, 502);
+            }
+            assert.equal(lastResponse.status, 429);
+            assert.ok(Number(lastResponse.headers.get("retry-after")) >= 1);
+            assert.equal((await lastResponse.json()).retryable, true);
+        });
+    });
+    assert.equal(githubCalls, 10);
 });
