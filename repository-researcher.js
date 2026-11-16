@@ -41,6 +41,49 @@ function parseJson(text) {
     return JSON.parse(cleaned);
 }
 
+function isNonEmptyString(value) {
+    return typeof value === "string" && value.trim().length > 0;
+}
+
+function isStringArray(value) {
+    return Array.isArray(value) && value.every(isNonEmptyString);
+}
+
+function isValidReport(report) {
+    if (!report || typeof report !== "object" || Array.isArray(report)) return false;
+
+    const requiredArrays = [
+        "architecture",
+        "hypotheses",
+        "missingInformation",
+        "proposedChanges",
+        "testPlan",
+        "rollbackPlan"
+    ];
+
+    if (!isNonEmptyString(report.summary)) return false;
+    if (requiredArrays.some(key => !isStringArray(report[key]))) return false;
+
+    if (!Array.isArray(report.confirmedFindings) ||
+        !report.confirmedFindings.every(item =>
+            item && typeof item === "object" && !Array.isArray(item) &&
+            isNonEmptyString(item.file) &&
+            isNonEmptyString(item.evidence) &&
+            isNonEmptyString(item.finding)
+        )) return false;
+
+    const priorities = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL"]);
+    if (!Array.isArray(report.recommendations) ||
+        !report.recommendations.every(item =>
+            item && typeof item === "object" && !Array.isArray(item) &&
+            priorities.has(item.priority) &&
+            isNonEmptyString(item.reason) &&
+            isNonEmptyString(item.proposal)
+        )) return false;
+
+    return true;
+}
+
 function createRepositoryResearchRouter(options) {
     const router = express.Router();
     const isAuthorized = options.isAuthorized;
@@ -149,18 +192,13 @@ function createRepositoryResearchRouter(options) {
             const answer = payload?.choices?.[0]?.message?.content;
             const report = parseJson(answer);
 
-            if (!report || typeof report !== "object" ||
-                typeof report.summary !== "string" ||
-                !Array.isArray(report.confirmedFindings) ||
-                !Array.isArray(report.recommendations) ||
-                !Array.isArray(report.testPlan) ||
-                !Array.isArray(report.rollbackPlan)) {
+            if (!isValidReport(report)) {
                 return res.status(502).json({ ok: false, error: "Research AI returned an invalid report structure" });
             }
 
             return res.json({
                 ok: true,
-                researchVersion: "1.0",
+                researchVersion: "1.4",
                 mode: "READ_ONLY",
                 repository,
                 ref,
