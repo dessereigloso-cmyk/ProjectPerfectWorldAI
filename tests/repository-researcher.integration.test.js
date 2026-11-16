@@ -190,3 +190,99 @@ test("rejects a malformed AI report instead of returning it as successful resear
         });
     });
 });
+
+
+test("rejects traversal refs, traversal paths, duplicate paths, and more than five files before upstream calls", async () => {
+    let outboundCalls = 0;
+    await withMockFetch(async () => {
+        outboundCalls += 1;
+        throw new Error("No upstream request should occur for invalid input.");
+    }, async () => {
+        await withServer(() => true, "test-key", async baseUrl => {
+            const cases = [
+                { ref: "../main", paths: ["README.md"] },
+                { ref: "main", paths: ["../secret.txt"] },
+                { ref: "main", paths: ["README.md", "README.md"] },
+                { ref: "main", paths: ["a", "b", "c", "d", "e", "f"] }
+            ];
+
+            for (const input of cases) {
+                const response = await fetch(`${baseUrl}/research/repository`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        repository: "sample/project",
+                        ...input
+                    })
+                });
+                assert.equal(response.status, 400);
+            }
+        });
+    });
+    assert.equal(outboundCalls, 0);
+});
+
+test("rejects binary file content before calling the AI provider", async () => {
+    let aiCalls = 0;
+    await withMockFetch(async url => {
+        const target = String(url);
+        if (target.startsWith("https://api.github.com/repos/")) {
+            return jsonResponse({
+                type: "file",
+                encoding: "base64",
+                content: Buffer.from([0x41, 0x00, 0x42]).toString("base64")
+            });
+        }
+        if (target === "https://openrouter.ai/api/v1/chat/completions") {
+            aiCalls += 1;
+        }
+        throw new Error(`Unexpected request: ${target}`);
+    }, async () => {
+        await withServer(() => true, "test-key", async baseUrl => {
+            const response = await fetch(`${baseUrl}/research/repository`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repository: "sample/project",
+                    paths: ["image.bin"]
+                })
+            });
+            assert.equal(response.status, 415);
+            assert.match((await response.json()).error, /Binary content rejected/);
+        });
+    });
+    assert.equal(aiCalls, 0);
+});
+
+test("rejects a file exceeding the per-file byte limit before calling the AI provider", async () => {
+    let aiCalls = 0;
+    const oversizedContent = Buffer.alloc(40001, 0x41).toString("base64");
+    await withMockFetch(async url => {
+        const target = String(url);
+        if (target.startsWith("https://api.github.com/repos/")) {
+            return jsonResponse({
+                type: "file",
+                encoding: "base64",
+                content: oversizedContent
+            });
+        }
+        if (target === "https://openrouter.ai/api/v1/chat/completions") {
+            aiCalls += 1;
+        }
+        throw new Error(`Unexpected request: ${target}`);
+    }, async () => {
+        await withServer(() => true, "test-key", async baseUrl => {
+            const response = await fetch(`${baseUrl}/research/repository`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    repository: "sample/project",
+                    paths: ["large.txt"]
+                })
+            });
+            assert.equal(response.status, 413);
+            assert.match((await response.json()).error, /File too large/);
+        });
+    });
+    assert.equal(aiCalls, 0);
+});
