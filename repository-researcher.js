@@ -123,6 +123,11 @@ function createRepositoryResearchRouter(options) {
             return res.status(503).json({ ok: false, error: "Repository research AI provider is not configured" });
         }
 
+        const uniquePaths = [...new Set(paths)];
+        if (uniquePaths.length !== paths.length) {
+            return res.status(400).json({ ok: false, error: "Duplicate file paths are not allowed" });
+        }
+
         const now = Date.now();
         if (now - rateWindowStartedAt >= 60000) {
             rateWindowStartedAt = now;
@@ -138,11 +143,6 @@ function createRepositoryResearchRouter(options) {
         }
         requestsInWindow++;
         activeResearchRequests++;
-
-        const uniquePaths = [...new Set(paths)];
-        if (uniquePaths.length !== paths.length) {
-            return res.status(400).json({ ok: false, error: "Duplicate file paths are not allowed" });
-        }
 
         try {
             const files = [];
